@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = [
+  "zerocast_server",
+  "zerocast_client",
+  "zerocast_core"
+]
+
+[workspace.dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
