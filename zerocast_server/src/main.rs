@@ -1,11 +1,46 @@
-// Import
 use gstreamer::prelude::*;
 use gstreamer::{Element, ElementFactory, MessageView, Pipeline, State};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use zerocast_core::auth::AuthRequest;
 use zerocast_core::test_shared_logic;
 
-fn main() {
-  println!("Starting ZeroCast Server...");
-  test_shared_logic();
+mod features;
+
+use features::auth::interactor::AuthInteractor;
+use features::auth::session::SessionStore;
+
+#[tokio::main]
+async fn main() {
+  let store = Arc::new(SessionStore::new());
+  let creds = AuthInteractor::generate_host_credentials();
+
+  {
+    let mut guard = store.current_creds.lock().await;
+    *guard = Some(creds.clone());
+  }
+
+  println!("LOGIN: {} | PASSWORD: {}", creds.login, creds.password);
+
+  let store_clone = Arc::clone(&store);
+  tokio::spawn(async move {
+    let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
+    println!("Auth listener actvie on port 8080");
+    loop {
+      let (mut socket, _) = listener.accept().await.unwrap();
+      let store_for_task = Arc::clone(&store_clone);
+      tokio::spawn(async move {
+        let mut buffer = [0; 1024];
+        let n = socket.read(&mut buffer).await.unwrap();
+        let req: AuthRequest = serde_json::from_slice(&buffer[..n]).unwrap();
+        let response =
+          AuthInteractor::validate_client(store_for_task, req).await;
+        let resp_bytes = serde_json::to_vec(&response).unwrap();
+        socket.write_all(&resp_bytes).await.unwrap();
+      });
+    }
+  });
 
   gstreamer::init().expect("Failed to initialize GStreamer!");
 
