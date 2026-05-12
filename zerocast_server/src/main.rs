@@ -26,7 +26,7 @@ async fn main() {
   let store_clone = Arc::clone(&store);
   tokio::spawn(async move {
     let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
-    println!("Auth listener actvie on port 8080");
+    println!("Auth listener active on port 8080");
     loop {
       let (mut socket, _) = listener.accept().await.unwrap();
       let store_for_task = Arc::clone(&store_clone);
