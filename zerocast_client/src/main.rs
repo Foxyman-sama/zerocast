@@ -179,44 +179,42 @@ fn start_gstreamer_pipeline(
 
   let source = ElementFactory::make("udpsrc")
     .property("port", 5000i32)
-    .property("buffer-size", 41_943_040i32)
-    .property("do-timestamp", true)
+    .property("buffer-size", 20_971_520i32)
     .build()
-    .map_err(|e| format!("{:?}", e))?;
+    .map_err(|e| format!("Failed to create udpsrc: {:?}", e))?;
 
-  let queue1 = ElementFactory::make("queue")
-    .property("max-size-buffers", 5u32)
-    .build()
-    .map_err(|e| format!("{:?}", e))?;
+  let caps = Caps::builder("application/x-rtp")
+    .field("media", "video")
+    .field("clock-rate", 90000i32)
+    .field("encoding-name", "H264")
+    .field("payload", 96i32)
+    .build();
+  source.set_property("caps", &caps);
 
   let jitterbuffer = ElementFactory::make("rtpjitterbuffer")
-    .property("latency", 15u32)
+    .property("latency", 60u32)
     .property("drop-on-latency", true)
+    .property("do-lost", true)
     .build()
-    .map_err(|e| format!("{:?}", e))?;
+    .unwrap();
 
-  let depay = ElementFactory::make("rtph264depay")
-    .build()
-    .map_err(|e| format!("{:?}", e))?;
+  let depay = ElementFactory::make("rtph264depay").build().unwrap();
+  let parse = ElementFactory::make("h264parse").build().unwrap();
 
-  let queue2 = ElementFactory::make("queue")
-    .property("max-size-buffers", 5u32)
-    .build()
-    .map_err(|e| format!("{:?}", e))?;
-
-  let decode = ElementFactory::make("avdec_h264")
-    .build()
-    .map_err(|e| format!("{:?}", e))?;
+  let decode = ElementFactory::make("d3d11h264dec").build().unwrap();
+  let gpu_convert = ElementFactory::make("d3d11convert").build().unwrap();
+  let download = ElementFactory::make("d3d11download").build().unwrap();
 
   let convert = ElementFactory::make("videoconvert")
+    .property("n-threads", 4u32)
     .build()
-    .map_err(|e| format!("{:?}", e))?;
+    .unwrap();
 
   let appsink = ElementFactory::make("appsink")
     .build()
-    .map_err(|e| format!("{:?}", e))?
-    .dynamic_cast::<AppSink>()
-    .expect("AppSink cast execution failed");
+    .unwrap()
+    .dynamic_cast::<gstreamer_app::AppSink>()
+    .expect("AppSink cast failed");
 
   appsink.set_max_buffers(1);
   appsink.set_drop(true);
@@ -231,34 +229,29 @@ fn start_gstreamer_pipeline(
   pipeline
     .add_many([
       &source,
-      &queue1,
       &jitterbuffer,
       &depay,
-      &queue2,
+      &parse,
       &decode,
+      &gpu_convert,
+      &download,
       &convert,
       appsink.upcast_ref(),
     ])
-    .map_err(|e| format!("{:?}", e))?;
+    .unwrap();
 
   Element::link_many([
     &source,
-    &queue1,
     &jitterbuffer,
     &depay,
-    &queue2,
+    &parse,
     &decode,
+    &gpu_convert,
+    &download,
     &convert,
     appsink.upcast_ref(),
   ])
-  .map_err(|e| format!("{:?}", e))?;
-
-  let caps = Caps::builder("application/x-rtp")
-    .field("media", "video")
-    .field("clock-rate", 90000i32)
-    .field("encoding-name", "H264")
-    .build();
-  source.set_property("caps", &caps);
+  .unwrap();
 
   appsink.set_callbacks(
     gstreamer_app::AppSinkCallbacks::builder()

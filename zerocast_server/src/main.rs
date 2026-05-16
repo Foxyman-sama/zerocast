@@ -84,65 +84,64 @@ async fn main() {
   gstreamer::init().expect("Failed to initialize GStreamer!");
 
   let source = ElementFactory::make("d3d11screencapturesrc")
-    .name("screen_source")
     .build()
-    .expect("Failed to create d3d11screencapturesrc");
-
-  let d3d11scale = ElementFactory::make("d3d11scale")
-    .name("gpu_scaler")
-    .build()
-    .expect("Failed to create d3d11scale");
+    .unwrap();
+  let d3d11scale = ElementFactory::make("d3d11scale").build().unwrap();
+  let d3d11convert = ElementFactory::make("d3d11convert").build().unwrap();
 
   let gpu_caps = ElementFactory::make("capsfilter")
-        .name("gpu_caps")
-        .property_from_str("caps", "video/x-raw(memory:D3D11Memory), width=1920, height=1080, framerate=60/1")
-        .build()
-        .expect("Failed to create gpu_caps");
-
-  let d3d11download = ElementFactory::make("d3d11download")
-    .name("gpu_download")
+    .property_from_str(
+      "caps",
+      "video/x-raw(memory:D3D11Memory), width=1280, height=720, format=NV12",
+    )
     .build()
-    .expect("Failed to create d3d11download");
+    .unwrap();
 
-  let videoconvert = ElementFactory::make("videoconvert")
-    .name("converter")
-    .build()
-    .expect("Failed to create videoconvert");
+  let d3d11download = ElementFactory::make("d3d11download").build().unwrap();
 
-  let cpu_caps = ElementFactory::make("capsfilter")
-    .name("cpu_caps")
-    .property_from_str("caps", "video/x-raw, format=NV12")
+  let videorate = ElementFactory::make("videorate")
+    .property("drop-only", true)
     .build()
-    .expect("Failed to create cpu_caps");
+    .unwrap();
+
+  let rate_caps = ElementFactory::make("capsfilter")
+    .property_from_str("caps", "video/x-raw, framerate=30/1")
+    .build()
+    .unwrap();
 
   let queue = ElementFactory::make("queue")
-    .name("encoder_queue")
     .property("max-size-buffers", 3u32)
     .build()
-    .expect("Failed to create queue");
+    .unwrap();
 
   let encoder = ElementFactory::make("nvh264enc")
-    .name("nvidia_encoder")
     .property_from_str("preset", "low-latency-hp")
-    .property_from_str("gop-size", "60")
-    .property("bitrate", 15000u32)
+    .property_from_str("rc-mode", "cbr")
+    .property("bitrate", 3000u32)
+    .property("gop-size", 15i32)
+    .property("bframes", 0u32)
+    .property("zerolatency", true)
+    .property("aud", true) // CRITICAL: Access Unit Delimiters fix UDP packet loss ghosting
     .build()
-    .expect("Failed to create nvh264enc");
+    .unwrap();
 
-  let payloader = ElementFactory::make("rtph264pay")
-    .name("rtp_payloader")
+  let parse = ElementFactory::make("h264parse")
     .property("config-interval", 1i32)
     .build()
-    .expect("Failed to create rtph264pay");
+    .unwrap();
+
+  let payloader = ElementFactory::make("rtph264pay")
+    .property("mtu", 1300u32) // Safe MTU size
+    .build()
+    .unwrap();
 
   let sink = ElementFactory::make("udpsink")
-    .name("udp_output")
     .property("host", client_ip.to_string())
     .property("port", 5000i32)
     .property("sync", false)
     .property("buffer-size", 20_971_520i32)
     .build()
-    .expect("Failed to create udpsink");
+    .unwrap();
 
   let pipeline = Pipeline::with_name("zerocast-capture-pipeline");
 
@@ -150,12 +149,14 @@ async fn main() {
     .add_many([
       &source,
       &d3d11scale,
+      &d3d11convert,
       &gpu_caps,
       &d3d11download,
-      &videoconvert,
-      &cpu_caps,
+      &videorate,
+      &rate_caps,
       &queue,
       &encoder,
+      &parse,
       &payloader,
       &sink,
     ])
@@ -164,19 +165,21 @@ async fn main() {
   Element::link_many([
     &source,
     &d3d11scale,
+    &d3d11convert,
     &gpu_caps,
     &d3d11download,
-    &videoconvert,
-    &cpu_caps,
+    &videorate,
+    &rate_caps,
     &queue,
     &encoder,
+    &parse,
     &payloader,
     &sink,
   ])
   .unwrap();
 
   println!(
-    "Streaming started! Hardware-Accelerated 1080p60 NVENC pipeline active..."
+    "Streaming started! UDP RTP 720p30 Anti-Ghosting Pipeline active..."
   );
   pipeline.set_state(State::Playing).unwrap();
 
