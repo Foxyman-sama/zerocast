@@ -179,7 +179,8 @@ fn start_gstreamer_pipeline(
 
   let source = ElementFactory::make("udpsrc")
     .property("port", 5000i32)
-    .property("buffer-size", 20_971_520i32)
+    .property("buffer-size", 41_943_040i32)
+    .property("do-timestamp", true)
     .build()
     .map_err(|e| format!("Failed to create udpsrc: {:?}", e))?;
 
@@ -191,8 +192,13 @@ fn start_gstreamer_pipeline(
     .build();
   source.set_property("caps", &caps);
 
+  let queue1 = ElementFactory::make("queue")
+    .property("max-size-buffers", 5u32)
+    .build()
+    .unwrap();
+
   let jitterbuffer = ElementFactory::make("rtpjitterbuffer")
-    .property("latency", 60u32)
+    .property("latency", 20u32)
     .property("drop-on-latency", true)
     .property("do-lost", true)
     .build()
@@ -201,14 +207,20 @@ fn start_gstreamer_pipeline(
   let depay = ElementFactory::make("rtph264depay").build().unwrap();
   let parse = ElementFactory::make("h264parse").build().unwrap();
 
-  let decode = ElementFactory::make("d3d11h264dec").build().unwrap();
-  let gpu_convert = ElementFactory::make("d3d11convert").build().unwrap();
-  let download = ElementFactory::make("d3d11download").build().unwrap();
-
-  let convert = ElementFactory::make("videoconvert")
-    .property("n-threads", 4u32)
+  let queue2 = ElementFactory::make("queue")
+    .property("max-size-buffers", 5u32)
     .build()
     .unwrap();
+
+  let decode = ElementFactory::make("d3d11h264dec").build().unwrap();
+  let gpu_convert = ElementFactory::make("d3d11convert").build().unwrap();
+
+  let client_gpu_caps = ElementFactory::make("capsfilter")
+    .property_from_str("caps", "video/x-raw(memory:D3D11Memory), format=RGBA")
+    .build()
+    .unwrap();
+
+  let download = ElementFactory::make("d3d11download").build().unwrap();
 
   let appsink = ElementFactory::make("appsink")
     .build()
@@ -229,26 +241,30 @@ fn start_gstreamer_pipeline(
   pipeline
     .add_many([
       &source,
+      &queue1,
       &jitterbuffer,
       &depay,
       &parse,
+      &queue2,
       &decode,
       &gpu_convert,
+      &client_gpu_caps,
       &download,
-      &convert,
       appsink.upcast_ref(),
     ])
     .unwrap();
 
   Element::link_many([
     &source,
+    &queue1,
     &jitterbuffer,
     &depay,
     &parse,
+    &queue2,
     &decode,
     &gpu_convert,
+    &client_gpu_caps,
     &download,
-    &convert,
     appsink.upcast_ref(),
   ])
   .unwrap();

@@ -90,24 +90,14 @@ async fn main() {
   let d3d11convert = ElementFactory::make("d3d11convert").build().unwrap();
 
   let gpu_caps = ElementFactory::make("capsfilter")
-    .property_from_str(
-      "caps",
-      "video/x-raw(memory:D3D11Memory), width=1280, height=720, format=NV12",
-    )
-    .build()
-    .unwrap();
+        .property_from_str(
+            "caps",
+            "video/x-raw(memory:D3D11Memory), width=1920, height=1080, format=NV12, framerate=60/1",
+        )
+        .build()
+        .unwrap();
 
   let d3d11download = ElementFactory::make("d3d11download").build().unwrap();
-
-  let videorate = ElementFactory::make("videorate")
-    .property("drop-only", true)
-    .build()
-    .unwrap();
-
-  let rate_caps = ElementFactory::make("capsfilter")
-    .property_from_str("caps", "video/x-raw, framerate=30/1")
-    .build()
-    .unwrap();
 
   let queue = ElementFactory::make("queue")
     .property("max-size-buffers", 3u32)
@@ -117,11 +107,12 @@ async fn main() {
   let encoder = ElementFactory::make("nvh264enc")
     .property_from_str("preset", "low-latency-hp")
     .property_from_str("rc-mode", "cbr")
-    .property("bitrate", 3000u32)
-    .property("gop-size", 15i32)
+    .property("bitrate", 12000u32) // 12 Mbps ceiling provides pristine 1080p text readability
+    .property("gop-size", 60i32) // Emit a keyframe exactly once per second at 60 FPS
     .property("bframes", 0u32)
     .property("zerolatency", true)
-    .property("aud", true) // CRITICAL: Access Unit Delimiters fix UDP packet loss ghosting
+    .property("rc-lookahead", 0u32) // Disable encoder frame caching to prevent processing delay
+    .property("aud", true)
     .build()
     .unwrap();
 
@@ -131,7 +122,7 @@ async fn main() {
     .unwrap();
 
   let payloader = ElementFactory::make("rtph264pay")
-    .property("mtu", 1300u32) // Safe MTU size
+    .property("mtu", 1300u32)
     .build()
     .unwrap();
 
@@ -139,7 +130,7 @@ async fn main() {
     .property("host", client_ip.to_string())
     .property("port", 5000i32)
     .property("sync", false)
-    .property("buffer-size", 20_971_520i32)
+    .property("buffer-size", 41_943_040i32) // Expanded to 40MB to protect network bursts
     .build()
     .unwrap();
 
@@ -152,8 +143,6 @@ async fn main() {
       &d3d11convert,
       &gpu_caps,
       &d3d11download,
-      &videorate,
-      &rate_caps,
       &queue,
       &encoder,
       &parse,
@@ -168,8 +157,6 @@ async fn main() {
     &d3d11convert,
     &gpu_caps,
     &d3d11download,
-    &videorate,
-    &rate_caps,
     &queue,
     &encoder,
     &parse,
@@ -179,7 +166,7 @@ async fn main() {
   .unwrap();
 
   println!(
-    "Streaming started! UDP RTP 720p30 Anti-Ghosting Pipeline active..."
+    "Streaming started! UDP RTP 1080p60 Pure-Hardware Pipeline active..."
   );
   pipeline.set_state(State::Playing).unwrap();
 
