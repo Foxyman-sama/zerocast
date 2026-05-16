@@ -2,7 +2,9 @@ use eframe::egui;
 use gstreamer::prelude::*;
 use gstreamer::{Caps, Element, ElementFactory, MessageView, Pipeline, State};
 use gstreamer_app::AppSink;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 mod features;
@@ -10,6 +12,13 @@ mod shared;
 
 use crate::shared::events::{AuthResult, SystemEvent, UiMessage};
 use features::auth::interactor::run_auth_interactor;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum RemoteInput {
+  MouseMove { x: f32, y: f32 },
+  MouseDown { button: String },
+  MouseUp { button: String },
+}
 
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
@@ -22,7 +31,9 @@ async fn main() -> eframe::Result<()> {
 
   let (ui_tx, ui_rx) = mpsc::channel::<UiMessage>(10);
   let (system_tx, system_rx) = mpsc::channel::<SystemEvent>(1);
-  let (frame_tx, frame_rx) = mpsc::channel::<egui::ColorImage>(2);
+
+  let (frame_tx, frame_rx) = mpsc::channel::<(Vec<u8>, i32, i32)>(2);
+  let (input_tx, input_rx) = mpsc::channel::<RemoteInput>(100);
 
   let auth_status = Arc::new(tokio::sync::Mutex::new(AuthResult::Error(
     "Please log in to establish a secure stream link.".to_string(),
@@ -31,6 +42,20 @@ async fn main() -> eframe::Result<()> {
   let auth_status_clone = Arc::clone(&auth_status);
   tokio::spawn(async move {
     run_auth_interactor(ui_rx, system_tx, auth_status_clone).await;
+  });
+
+  tokio::spawn(async move {
+    let mut input_rx = input_rx;
+    if let Ok(mut stream) =
+      tokio::net::TcpStream::connect("127.0.0.1:8081").await
+    {
+      while let Some(event) = input_rx.recv().await {
+        if let Ok(mut json_str) = serde_json::to_string(&event) {
+          json_str.push('\n');
+          let _ = stream.write_all(json_str.as_bytes()).await;
+        }
+      }
+    }
   });
 
   eframe::run_native(
@@ -50,7 +75,7 @@ async fn main() -> eframe::Result<()> {
         }
       });
 
-      Box::new(ZeroCastApp::new(cc, ui_tx, auth_status, frame_rx))
+      Box::new(ZeroCastApp::new(cc, ui_tx, auth_status, frame_rx, input_tx))
     }),
   )
 }
@@ -60,8 +85,9 @@ struct ZeroCastApp {
   password_input: String,
   ui_tx: mpsc::Sender<UiMessage>,
   auth_status: Arc<tokio::sync::Mutex<AuthResult>>,
-  frame_rx: mpsc::Receiver<egui::ColorImage>,
+  frame_rx: mpsc::Receiver<(Vec<u8>, i32, i32)>,
   video_texture: Option<egui::TextureHandle>,
+  input_tx: mpsc::Sender<RemoteInput>,
 }
 
 impl ZeroCastApp {
@@ -69,7 +95,8 @@ impl ZeroCastApp {
     _cc: &eframe::CreationContext<'_>,
     ui_tx: mpsc::Sender<UiMessage>,
     auth_status: Arc<tokio::sync::Mutex<AuthResult>>,
-    frame_rx: mpsc::Receiver<egui::ColorImage>,
+    frame_rx: mpsc::Receiver<(Vec<u8>, i32, i32)>,
+    input_tx: mpsc::Sender<RemoteInput>,
   ) -> Self {
     Self {
       login_input: String::new(),
@@ -78,18 +105,24 @@ impl ZeroCastApp {
       auth_status,
       frame_rx,
       video_texture: None,
+      input_tx,
     }
   }
 }
 
 impl eframe::App for ZeroCastApp {
   fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-    let mut latest_frame = None;
-    while let Ok(frame) = self.frame_rx.try_recv() {
-      latest_frame = Some(frame);
+    let mut latest_raw_data = None;
+    while let Ok(raw_payload) = self.frame_rx.try_recv() {
+      latest_raw_data = Some(raw_payload);
     }
 
-    if let Some(image) = latest_frame {
+    if let Some((data, width, height)) = latest_raw_data {
+      let image = egui::ColorImage::from_rgba_unmultiplied(
+        [width as usize, height as usize],
+        &data,
+      );
+
       if let Some(texture) = &mut self.video_texture {
         texture.set(image, egui::TextureOptions::LINEAR);
       } else {
@@ -113,7 +146,41 @@ impl eframe::App for ZeroCastApp {
           ui.with_layout(
             egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
             |ui| {
-              ui.add(egui::Image::from_texture(texture).shrink_to_fit());
+              let image_resp = ui.add(
+                egui::Image::from_texture(texture)
+                  .shrink_to_fit()
+                  .sense(egui::Sense::click_and_drag()),
+              );
+
+              if let Some(hover_pos) = image_resp.hover_pos() {
+                let rect = image_resp.rect;
+                let norm_x = (hover_pos.x - rect.min.x) / rect.width();
+                let norm_y = (hover_pos.y - rect.min.y) / rect.height();
+
+                if (0.0..=1.0).contains(&norm_x)
+                  && (0.0..=1.0).contains(&norm_y)
+                {
+                  let _ = self.input_tx.try_send(RemoteInput::MouseMove {
+                    x: norm_x,
+                    y: norm_y,
+                  });
+                }
+              }
+
+              if image_resp.hovered() || image_resp.dragged() {
+                ctx.input(|i| {
+                  if i.pointer.button_pressed(egui::PointerButton::Primary) {
+                    let _ = self.input_tx.try_send(RemoteInput::MouseDown {
+                      button: "left".to_string(),
+                    });
+                  }
+                  if i.pointer.button_released(egui::PointerButton::Primary) {
+                    let _ = self.input_tx.try_send(RemoteInput::MouseUp {
+                      button: "left".to_string(),
+                    });
+                  }
+                });
+              }
             },
           );
         } else {
@@ -172,7 +239,7 @@ impl eframe::App for ZeroCastApp {
 }
 
 fn start_gstreamer_pipeline(
-  frame_tx: mpsc::Sender<egui::ColorImage>,
+  frame_tx: mpsc::Sender<(Vec<u8>, i32, i32)>,
   ctx: egui::Context,
 ) -> Result<(), String> {
   gstreamer::init().map_err(|e| format!("GStreamer init error: {:?}", e))?;
@@ -198,7 +265,7 @@ fn start_gstreamer_pipeline(
     .unwrap();
 
   let jitterbuffer = ElementFactory::make("rtpjitterbuffer")
-    .property("latency", 20u32)
+    .property("latency", 33u32) // Set to 33ms (exactly 2 frames at 60 FPS) to maintain a smooth packet queue
     .property("drop-on-latency", true)
     .property("do-lost", true)
     .build()
@@ -288,12 +355,7 @@ fn start_gstreamer_pipeline(
           .get("height")
           .map_err(|_| gstreamer::FlowError::Error)?;
 
-        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-          [width as usize, height as usize],
-          map.as_slice(),
-        );
-
-        let _ = frame_tx.try_send(color_image);
+        let _ = frame_tx.try_send((map.as_slice().to_vec(), width, height));
         ctx.request_repaint();
 
         Ok(gstreamer::FlowSuccess::Ok)
