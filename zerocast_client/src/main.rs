@@ -1,16 +1,257 @@
+use eframe::egui;
 use gstreamer::prelude::*;
 use gstreamer::{Caps, Element, ElementFactory, MessageView, Pipeline, State};
+use gstreamer_app::AppSink;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
-fn main() {
-  println!("Starting ZeroCast Client...");
+mod features;
+mod shared;
 
-  gstreamer::init().expect("Failed to initialize GStreamer!");
+use crate::shared::events::{AuthResult, SystemEvent, UiMessage};
+use features::auth::interactor::run_auth_interactor;
+
+#[tokio::main]
+async fn main() -> eframe::Result<()> {
+  let native_options = eframe::NativeOptions {
+    viewport: egui::ViewportBuilder::default()
+      .with_inner_size([1280.0, 720.0])
+      .with_title("ZeroCast Client"),
+    ..Default::default()
+  };
+
+  let (ui_tx, ui_rx) = mpsc::channel::<UiMessage>(10);
+  let (system_tx, system_rx) = mpsc::channel::<SystemEvent>(1);
+  let (frame_tx, frame_rx) = mpsc::channel::<egui::ColorImage>(2);
+
+  let auth_status = Arc::new(tokio::sync::Mutex::new(AuthResult::Error(
+    "Please log in to establish a secure stream link.".to_string(),
+  )));
+
+  let auth_status_clone = Arc::clone(&auth_status);
+  tokio::spawn(async move {
+    run_auth_interactor(ui_rx, system_tx, auth_status_clone).await;
+  });
+
+  eframe::run_native(
+    "ZeroCast Client",
+    native_options,
+    Box::new(|cc| {
+      let ctx_clone = cc.egui_ctx.clone();
+
+      tokio::spawn(async move {
+        let mut system_rx = system_rx;
+        if let Some(SystemEvent::AuthSuccess) = system_rx.recv().await {
+          tokio::task::spawn_blocking(move || {
+            if let Err(e) = start_gstreamer_pipeline(frame_tx, ctx_clone) {
+              eprintln!("GStreamer pipeline execution failure: {}", e);
+            }
+          });
+        }
+      });
+
+      Box::new(ZeroCastApp::new(cc, ui_tx, auth_status, frame_rx))
+    }),
+  )
+}
+
+struct ZeroCastApp {
+  login_input: String,
+  password_input: String,
+  ui_tx: mpsc::Sender<UiMessage>,
+  auth_status: Arc<tokio::sync::Mutex<AuthResult>>,
+  frame_rx: mpsc::Receiver<egui::ColorImage>,
+  video_texture: Option<egui::TextureHandle>,
+}
+
+impl ZeroCastApp {
+  fn new(
+    _cc: &eframe::CreationContext<'_>,
+    ui_tx: mpsc::Sender<UiMessage>,
+    auth_status: Arc<tokio::sync::Mutex<AuthResult>>,
+    frame_rx: mpsc::Receiver<egui::ColorImage>,
+  ) -> Self {
+    Self {
+      login_input: String::new(),
+      password_input: String::new(),
+      ui_tx,
+      auth_status,
+      frame_rx,
+      video_texture: None,
+    }
+  }
+}
+
+impl eframe::App for ZeroCastApp {
+  fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    let mut latest_frame = None;
+    while let Ok(frame) = self.frame_rx.try_recv() {
+      latest_frame = Some(frame);
+    }
+
+    if let Some(image) = latest_frame {
+      if let Some(texture) = &mut self.video_texture {
+        texture.set(image, egui::TextureOptions::LINEAR);
+      } else {
+        self.video_texture = Some(ctx.load_texture(
+          "remote-video-frame",
+          image,
+          egui::TextureOptions::LINEAR,
+        ));
+      }
+    }
+
+    let current_state = if let Ok(guard) = self.auth_status.try_lock() {
+      guard.clone()
+    } else {
+      AuthResult::Pending
+    };
+
+    egui::CentralPanel::default().show(ctx, |ui| match current_state {
+      AuthResult::Success => {
+        if let Some(texture) = &self.video_texture {
+          ui.with_layout(
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+            |ui| {
+              ui.add(egui::Image::from_texture(texture).shrink_to_fit());
+            },
+          );
+        } else {
+          ui.centered_and_justified(|ui| {
+            ui.vertical_centered(|ui| {
+              ui.add(egui::Spinner::new().size(40.0));
+              ui.add(egui::Label::new("Connecting to media stream..."));
+            });
+          });
+        }
+      }
+      _ => {
+        ui.centered_and_justified(|ui| {
+          ui.set_max_width(320.0);
+          ui.vertical_centered(|ui| {
+            ui.heading("ZeroCast Remote Authorization");
+            ui.add_space(20.0);
+
+            ui.horizontal(|ui| {
+              ui.label("Login:    ");
+              ui.text_edit_singleline(&mut self.login_input);
+            });
+            ui.add_space(8.0);
+
+            ui.horizontal(|ui| {
+              ui.label("Password: ");
+              ui.add(
+                egui::TextEdit::singleline(&mut self.password_input)
+                  .password(true),
+              );
+            });
+            ui.add_space(15.0);
+
+            match &current_state {
+              AuthResult::Pending => {
+                ui.add(egui::Spinner::new());
+                ui.label("Verifying security parameters...");
+              }
+              AuthResult::Error(reason) => {
+                ui.colored_label(egui::Color32::LIGHT_RED, reason);
+                ui.add_space(10.0);
+                if ui.button("Establish Connection").clicked() {
+                  let _ = self.ui_tx.try_send(UiMessage::AuthRequest(
+                    self.login_input.clone(),
+                    self.password_input.clone(),
+                  ));
+                }
+              }
+              _ => {}
+            }
+          });
+        });
+      }
+    });
+  }
+}
+
+fn start_gstreamer_pipeline(
+  frame_tx: mpsc::Sender<egui::ColorImage>,
+  ctx: egui::Context,
+) -> Result<(), String> {
+  gstreamer::init().map_err(|e| format!("GStreamer init error: {:?}", e))?;
 
   let source = ElementFactory::make("udpsrc")
-    .name("udp_input")
     .property("port", 5000i32)
+    .property("buffer-size", 41_943_040i32)
+    .property("do-timestamp", true)
     .build()
-    .expect("Failed to create udpsrc");
+    .map_err(|e| format!("{:?}", e))?;
+
+  let queue1 = ElementFactory::make("queue")
+    .property("max-size-buffers", 5u32)
+    .build()
+    .map_err(|e| format!("{:?}", e))?;
+
+  let jitterbuffer = ElementFactory::make("rtpjitterbuffer")
+    .property("latency", 15u32)
+    .property("drop-on-latency", true)
+    .build()
+    .map_err(|e| format!("{:?}", e))?;
+
+  let depay = ElementFactory::make("rtph264depay")
+    .build()
+    .map_err(|e| format!("{:?}", e))?;
+
+  let queue2 = ElementFactory::make("queue")
+    .property("max-size-buffers", 5u32)
+    .build()
+    .map_err(|e| format!("{:?}", e))?;
+
+  let decode = ElementFactory::make("avdec_h264")
+    .build()
+    .map_err(|e| format!("{:?}", e))?;
+
+  let convert = ElementFactory::make("videoconvert")
+    .build()
+    .map_err(|e| format!("{:?}", e))?;
+
+  let appsink = ElementFactory::make("appsink")
+    .build()
+    .map_err(|e| format!("{:?}", e))?
+    .dynamic_cast::<AppSink>()
+    .expect("AppSink cast execution failed");
+
+  appsink.set_max_buffers(1);
+  appsink.set_drop(true);
+  appsink.set_property("sync", false);
+  appsink.set_property(
+    "caps",
+    &Caps::builder("video/x-raw").field("format", "RGBA").build(),
+  );
+
+  let pipeline = Pipeline::with_name("client-render-pipeline");
+
+  pipeline
+    .add_many([
+      &source,
+      &queue1,
+      &jitterbuffer,
+      &depay,
+      &queue2,
+      &decode,
+      &convert,
+      appsink.upcast_ref(),
+    ])
+    .map_err(|e| format!("{:?}", e))?;
+
+  Element::link_many([
+    &source,
+    &queue1,
+    &jitterbuffer,
+    &depay,
+    &queue2,
+    &decode,
+    &convert,
+    appsink.upcast_ref(),
+  ])
+  .map_err(|e| format!("{:?}", e))?;
 
   let caps = Caps::builder("application/x-rtp")
     .field("media", "video")
@@ -19,48 +260,59 @@ fn main() {
     .build();
   source.set_property("caps", &caps);
 
-  let depayloader = ElementFactory::make("rtph264depay")
-    .name("rtp_depayloader")
-    .build()
-    .expect("Failed to create rtph264depay");
+  appsink.set_callbacks(
+    gstreamer_app::AppSinkCallbacks::builder()
+      .new_sample(move |sink| {
+        let sample =
+          sink.pull_sample().map_err(|_| gstreamer::FlowError::Eos)?;
+        let buffer = sample.buffer().ok_or(gstreamer::FlowError::Error)?;
+        let map = buffer
+          .map_readable()
+          .map_err(|_| gstreamer::FlowError::Error)?;
 
-  let decoder = ElementFactory::make("avdec_h264")
-    .name("h264_decoder")
-    .build()
-    .expect("Failed to create avdec_h264");
+        let caps = sample.caps().ok_or(gstreamer::FlowError::Error)?;
+        let structure = caps.structure(0).ok_or(gstreamer::FlowError::Error)?;
+        let width: i32 = structure
+          .get("width")
+          .map_err(|_| gstreamer::FlowError::Error)?;
+        let height: i32 = structure
+          .get("height")
+          .map_err(|_| gstreamer::FlowError::Error)?;
 
-  let videoconvert = ElementFactory::make("videoconvert")
-    .build()
-    .expect("Failed to create videoconvert");
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(
+          [width as usize, height as usize],
+          map.as_slice(),
+        );
 
-  let sink = ElementFactory::make("autovideosink")
-    .build()
-    .expect("Failed to create autovideosink");
+        let _ = frame_tx.try_send(color_image);
+        ctx.request_repaint();
 
-  let pipeline = Pipeline::with_name("zerocast-receive-pipeline");
+        Ok(gstreamer::FlowSuccess::Ok)
+      })
+      .build(),
+  );
+
   pipeline
-    .add_many([&source, &depayloader, &decoder, &videoconvert, &sink])
-    .unwrap();
-  Element::link_many([&source, &depayloader, &decoder, &videoconvert, &sink])
-    .unwrap();
-
-  println!("Listening for stream on UDP 5000... Waiting for server!");
-  pipeline.set_state(State::Playing).unwrap();
+    .set_state(State::Playing)
+    .map_err(|e| format!("{:?}", e))?;
 
   let bus = pipeline.bus().unwrap();
   for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
     match msg.view() {
       MessageView::Error(err) => {
-        eprintln!("Error: {} ({:?})", err.error(), err.debug());
-        break;
-      }
-      MessageView::Eos(..) => {
-        println!("Stream ended.");
+        eprintln!(
+          "Pipeline runtime failure context: {:?} ({:?})",
+          err.error(),
+          err.debug()
+        );
         break;
       }
       _ => (),
     }
   }
 
-  pipeline.set_state(State::Null).unwrap();
+  pipeline
+    .set_state(State::Null)
+    .map_err(|e| format!("{:?}", e))?;
+  Ok(())
 }

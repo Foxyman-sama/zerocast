@@ -1,0 +1,4 @@
+[env]
+PKG_CONFIG_PATH_x86_64-pc-windows-msvc = { value = "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\lib\\pkgconfig", force = true }
+PKG_CONFIG_ALLOW_SYSTEM_CFLAGS = { value = "1", force = true }
+PATH = { value = "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\bin;%PATH%", force = true }
