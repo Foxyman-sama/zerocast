@@ -18,6 +18,12 @@ pub enum RemoteInput {
   MouseMove { x: f32, y: f32 },
   MouseDown { button: String },
   MouseUp { button: String },
+  Ping { client_time: u64 }, // Додано для вимірювання затримки
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum ServerResponse {
+  Pong { client_time: u64 },
 }
 
 #[tokio::main]
@@ -89,10 +95,11 @@ async fn main() {
       if let Ok((socket, _)) = listener.accept().await {
         tokio::spawn(async move {
           let mut enigo = Enigo::new(&Settings::default()).unwrap();
-          let mut reader = tokio::io::BufReader::new(socket);
+          let (reader, mut writer) = socket.into_split();
+          let mut buf_reader = tokio::io::BufReader::new(reader);
           let mut line = String::new();
 
-          while let Ok(bytes_read) = reader.read_line(&mut line).await {
+          while let Ok(bytes_read) = buf_reader.read_line(&mut line).await {
             if bytes_read == 0 {
               break;
             }
@@ -114,6 +121,13 @@ async fn main() {
                   if button == "left" {
                     let _ = enigo
                       .button(enigo::Button::Left, enigo::Direction::Release);
+                  }
+                }
+                RemoteInput::Ping { client_time } => {
+                  let response = ServerResponse::Pong { client_time };
+                  if let Ok(mut resp_str) = serde_json::to_string(&response) {
+                    resp_str.push('\n');
+                    let _ = writer.write_all(resp_str.as_bytes()).await;
                   }
                 }
               }
@@ -142,7 +156,6 @@ async fn main() {
   let d3d11scale = ElementFactory::make("d3d11scale").build().unwrap();
   let d3d11convert = ElementFactory::make("d3d11convert").build().unwrap();
 
-  // Lock resolution, color layout, and 60 FPS pacing entirely inside hardware VRAM layers
   let gpu_caps = ElementFactory::make("capsfilter")
         .property_from_str(
             "caps",
@@ -161,15 +174,14 @@ async fn main() {
     .build()
     .unwrap();
 
-  // Optimized NVIDIA NVENC Configuration
   let encoder = ElementFactory::make("nvh264enc")
     .property_from_str("preset", "low-latency-hp")
     .property_from_str("rc-mode", "cbr")
-    .property("bitrate", 12000u32) // 12 Mbps optimizes LAN data streams without network saturation
-    .property("gop-size", 60i32) // Strictly output one keyframe per second at 60 FPS
-    .property("bframes", 0u32) // 0 B-frames guarantees low processing delay
-    .property("rc-lookahead", 0u32) // Bypass lookahead buffering loops for real-time output stream delivery
-    .property("aud", true) // Access Unit Delimiters preserve UDP frame integrity
+    .property("bitrate", 12000u32)
+    .property("gop-size", 60i32)
+    .property("bframes", 0u32)
+    .property("rc-lookahead", 0u32)
+    .property("aud", true)
     .build()
     .unwrap();
 
@@ -192,7 +204,7 @@ async fn main() {
     .property("host", client_ip.to_string())
     .property("port", 5000i32)
     .property("sync", false)
-    .property("buffer-size", 41_943_040i32) // 40MB socket allocation protects against network burst drops
+    .property("buffer-size", 41_943_040i32)
     .build()
     .unwrap();
 

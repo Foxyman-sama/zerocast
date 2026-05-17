@@ -3,7 +3,7 @@ use gstreamer::prelude::*;
 use gstreamer::{Caps, Element, ElementFactory, MessageView, Pipeline, State};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 mod features;
@@ -17,6 +17,12 @@ pub enum RemoteInput {
   MouseMove { x: f32, y: f32 },
   MouseDown { button: String },
   MouseUp { button: String },
+  Ping { client_time: u64 },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum ServerResponse {
+  Pong { client_time: u64 },
 }
 
 #[tokio::main]
@@ -33,6 +39,8 @@ async fn main() -> eframe::Result<()> {
   let (ui_frame_tx, ui_frame_rx) = mpsc::channel::<egui::ColorImage>(2);
   let (input_tx, input_rx) = mpsc::channel::<RemoteInput>(100);
 
+  let (latency_tx, latency_rx) = mpsc::channel::<f64>(10);
+
   let auth_status = Arc::new(tokio::sync::Mutex::new(AuthResult::Error(
     "Please log in to establish a secure stream link.".to_string(),
   )));
@@ -47,10 +55,51 @@ async fn main() -> eframe::Result<()> {
     if let Ok(mut stream) =
       tokio::net::TcpStream::connect("127.0.0.1:8081").await
     {
-      while let Some(event) = input_rx.recv().await {
-        if let Ok(mut json_str) = serde_json::to_string(&event) {
-          json_str.push('\n');
-          let _ = stream.write_all(json_str.as_bytes()).await;
+      let (reader, mut writer) = stream.into_split();
+      let latency_tx_clone = latency_tx.clone();
+      tokio::spawn(async move {
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut line = String::new();
+        while let Ok(n) = buf_reader.read_line(&mut line).await {
+          if n == 0 {
+            break;
+          }
+          if let Ok(ServerResponse::Pong { client_time }) =
+            serde_json::from_str::<ServerResponse>(&line)
+          {
+            let now = std::time::SystemTime::now()
+              .duration_since(std::time::UNIX_EPOCH)
+              .unwrap()
+              .as_millis() as u64;
+            let rtt = now.saturating_sub(client_time);
+            let network_latency = rtt as f64 / 2.0;
+            let _ = latency_tx_clone.try_send(network_latency);
+          }
+          line.clear();
+        }
+      });
+
+      let mut ping_timer =
+        tokio::time::interval(std::time::Duration::from_millis(500));
+      loop {
+        tokio::select! {
+            Some(event) = input_rx.recv() => {
+                if let Ok(mut json_str) = serde_json::to_string(&event) {
+                    json_str.push('\n');
+                    let _ = writer.write_all(json_str.as_bytes()).await;
+                }
+            }
+            _ = ping_timer.tick() => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let ping_packet = RemoteInput::Ping { client_time: now };
+                if let Ok(mut json_str) = serde_json::to_string(&ping_packet) {
+                    json_str.push('\n');
+                    let _ = writer.write_all(json_str.as_bytes()).await;
+                }
+            }
         }
       }
     }
@@ -61,7 +110,6 @@ async fn main() -> eframe::Result<()> {
     native_options,
     Box::new(move |cc| {
       let ctx_clone = cc.egui_ctx.clone();
-
       let (raw_frame_tx, mut raw_frame_rx) =
         mpsc::channel::<(Vec<u8>, i32, i32)>(2);
 
@@ -112,6 +160,7 @@ async fn main() -> eframe::Result<()> {
         auth_status,
         ui_frame_rx,
         input_tx,
+        latency_rx,
       ))
     }),
   )
@@ -125,6 +174,12 @@ struct ZeroCastApp {
   frame_rx: mpsc::Receiver<egui::ColorImage>,
   video_texture: Option<egui::TextureHandle>,
   input_tx: mpsc::Sender<RemoteInput>,
+
+  latency_rx: mpsc::Receiver<f64>,
+  current_latency: f64,
+  fps_counter: usize,
+  fps_timer: std::time::Instant,
+  current_fps: usize,
 }
 
 impl ZeroCastApp {
@@ -134,6 +189,7 @@ impl ZeroCastApp {
     auth_status: Arc<tokio::sync::Mutex<AuthResult>>,
     frame_rx: mpsc::Receiver<egui::ColorImage>,
     input_tx: mpsc::Sender<RemoteInput>,
+    latency_rx: mpsc::Receiver<f64>,
   ) -> Self {
     Self {
       login_input: String::new(),
@@ -143,15 +199,31 @@ impl ZeroCastApp {
       frame_rx,
       video_texture: None,
       input_tx,
+      latency_rx,
+      current_latency: 0.0,
+      fps_counter: 0,
+      fps_timer: std::time::Instant::now(),
+      current_fps: 0,
     }
   }
 }
 
 impl eframe::App for ZeroCastApp {
   fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    while let Ok(latency) = self.latency_rx.try_recv() {
+      self.current_latency = latency;
+    }
+
     let mut latest_frame = None;
     while let Ok(frame) = self.frame_rx.try_recv() {
       latest_frame = Some(frame);
+      self.fps_counter += 1;
+    }
+
+    if self.fps_timer.elapsed().as_secs() >= 1 {
+      self.current_fps = self.fps_counter;
+      self.fps_counter = 0;
+      self.fps_timer = std::time::Instant::now();
     }
 
     if let Some(image) = latest_frame {
@@ -215,6 +287,25 @@ impl eframe::App for ZeroCastApp {
               }
             },
           );
+
+          egui::Area::new(egui::Id::new("telemetry_hud"))
+            .anchor(egui::Align2::LEFT_TOP, egui::vec2(15.0, 15.0))
+            .show(ctx, |ui| {
+              egui::Frame::none()
+                .fill(egui::Color32::from_black_alpha(160))
+                .rounding(5.0)
+                .inner_margin(8.0)
+                .show(ui, |ui| {
+                  ui.colored_label(
+                    egui::Color32::LIGHT_GREEN,
+                    format!("FPS: {}", self.current_fps),
+                  );
+                  ui.colored_label(
+                    egui::Color32::LIGHT_BLUE,
+                    format!("NET: {:.1} ms", self.current_latency),
+                  );
+                });
+            });
         } else {
           ui.centered_and_justified(|ui| {
             ui.vertical_centered(|ui| {
