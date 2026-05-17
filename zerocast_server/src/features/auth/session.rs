@@ -1,12 +1,14 @@
-use std::sync::Arc;
 use tokio::sync::Mutex;
-use zerocast_core::auth::AuthCredentials;
+use zerocast_core::auth::AuthRequest;
 
+/// Thread-safe in-memory storage for session security states
 pub struct SessionStore {
-  pub current_creds: Mutex<Option<AuthCredentials>>,
+  // Uses a Tokio async Mutex to protect credentials across connection tasks
+  pub current_creds: Mutex<Option<AuthRequest>>,
 }
 
 impl SessionStore {
+  /// Instantiates a empty session storage container
   pub fn new() -> Self {
     Self {
       current_creds: Mutex::new(None),
