@@ -1,7 +1,6 @@
 use eframe::egui;
 use gstreamer::prelude::*;
 use gstreamer::{Caps, Element, ElementFactory, MessageView, Pipeline, State};
-use gstreamer_app::AppSink;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -31,8 +30,7 @@ async fn main() -> eframe::Result<()> {
 
   let (ui_tx, ui_rx) = mpsc::channel::<UiMessage>(10);
   let (system_tx, system_rx) = mpsc::channel::<SystemEvent>(1);
-
-  let (frame_tx, frame_rx) = mpsc::channel::<(Vec<u8>, i32, i32)>(2);
+  let (ui_frame_tx, ui_frame_rx) = mpsc::channel::<egui::ColorImage>(2);
   let (input_tx, input_rx) = mpsc::channel::<RemoteInput>(100);
 
   let auth_status = Arc::new(tokio::sync::Mutex::new(AuthResult::Error(
@@ -61,21 +59,60 @@ async fn main() -> eframe::Result<()> {
   eframe::run_native(
     "ZeroCast Client",
     native_options,
-    Box::new(|cc| {
+    Box::new(move |cc| {
       let ctx_clone = cc.egui_ctx.clone();
+
+      let (raw_frame_tx, mut raw_frame_rx) =
+        mpsc::channel::<(Vec<u8>, i32, i32)>(2);
+
+      let buffer_pool = Arc::new(std::sync::Mutex::new(vec![
+        vec![0u8; 1920 * 1080 * 4],
+        vec![0u8; 1920 * 1080 * 4],
+        vec![0u8; 1920 * 1080 * 4],
+      ]));
+
+      let ui_frame_tx_clone = ui_frame_tx.clone();
+      let pool_for_worker = Arc::clone(&buffer_pool);
+      let ctx_for_worker = ctx_clone.clone();
+
+      tokio::spawn(async move {
+        while let Some((raw_data, width, height)) = raw_frame_rx.recv().await {
+          let color_image = egui::ColorImage::from_rgba_unmultiplied(
+            [width as usize, height as usize],
+            &raw_data,
+          );
+
+          {
+            let mut pool = pool_for_worker.lock().unwrap();
+            if pool.len() < 3 {
+              pool.push(raw_data);
+            }
+          }
+
+          let _ = ui_frame_tx_clone.try_send(color_image);
+          ctx_for_worker.request_repaint();
+        }
+      });
 
       tokio::spawn(async move {
         let mut system_rx = system_rx;
         if let Some(SystemEvent::AuthSuccess) = system_rx.recv().await {
           tokio::task::spawn_blocking(move || {
-            if let Err(e) = start_gstreamer_pipeline(frame_tx, ctx_clone) {
+            if let Err(e) = start_gstreamer_pipeline(raw_frame_tx, buffer_pool)
+            {
               eprintln!("GStreamer pipeline execution failure: {}", e);
             }
           });
         }
       });
 
-      Box::new(ZeroCastApp::new(cc, ui_tx, auth_status, frame_rx, input_tx))
+      Box::new(ZeroCastApp::new(
+        cc,
+        ui_tx,
+        auth_status,
+        ui_frame_rx,
+        input_tx,
+      ))
     }),
   )
 }
@@ -85,7 +122,7 @@ struct ZeroCastApp {
   password_input: String,
   ui_tx: mpsc::Sender<UiMessage>,
   auth_status: Arc<tokio::sync::Mutex<AuthResult>>,
-  frame_rx: mpsc::Receiver<(Vec<u8>, i32, i32)>,
+  frame_rx: mpsc::Receiver<egui::ColorImage>,
   video_texture: Option<egui::TextureHandle>,
   input_tx: mpsc::Sender<RemoteInput>,
 }
@@ -95,7 +132,7 @@ impl ZeroCastApp {
     _cc: &eframe::CreationContext<'_>,
     ui_tx: mpsc::Sender<UiMessage>,
     auth_status: Arc<tokio::sync::Mutex<AuthResult>>,
-    frame_rx: mpsc::Receiver<(Vec<u8>, i32, i32)>,
+    frame_rx: mpsc::Receiver<egui::ColorImage>,
     input_tx: mpsc::Sender<RemoteInput>,
   ) -> Self {
     Self {
@@ -112,17 +149,12 @@ impl ZeroCastApp {
 
 impl eframe::App for ZeroCastApp {
   fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-    let mut latest_raw_data = None;
-    while let Ok(raw_payload) = self.frame_rx.try_recv() {
-      latest_raw_data = Some(raw_payload);
+    let mut latest_frame = None;
+    while let Ok(frame) = self.frame_rx.try_recv() {
+      latest_frame = Some(frame);
     }
 
-    if let Some((data, width, height)) = latest_raw_data {
-      let image = egui::ColorImage::from_rgba_unmultiplied(
-        [width as usize, height as usize],
-        &data,
-      );
-
+    if let Some(image) = latest_frame {
       if let Some(texture) = &mut self.video_texture {
         texture.set(image, egui::TextureOptions::LINEAR);
       } else {
@@ -239,8 +271,8 @@ impl eframe::App for ZeroCastApp {
 }
 
 fn start_gstreamer_pipeline(
-  frame_tx: mpsc::Sender<(Vec<u8>, i32, i32)>,
-  ctx: egui::Context,
+  raw_frame_tx: mpsc::Sender<(Vec<u8>, i32, i32)>,
+  buffer_pool: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
 ) -> Result<(), String> {
   gstreamer::init().map_err(|e| format!("GStreamer init error: {:?}", e))?;
 
@@ -265,7 +297,7 @@ fn start_gstreamer_pipeline(
     .unwrap();
 
   let jitterbuffer = ElementFactory::make("rtpjitterbuffer")
-    .property("latency", 33u32) // Set to 33ms (exactly 2 frames at 60 FPS) to maintain a smooth packet queue
+    .property("latency", 40u32)
     .property("drop-on-latency", true)
     .property("do-lost", true)
     .build()
@@ -355,8 +387,19 @@ fn start_gstreamer_pipeline(
           .get("height")
           .map_err(|_| gstreamer::FlowError::Error)?;
 
-        let _ = frame_tx.try_send((map.as_slice().to_vec(), width, height));
-        ctx.request_repaint();
+        let mut raw_buffer = {
+          let mut pool = buffer_pool.lock().unwrap();
+          pool
+            .pop()
+            .unwrap_or_else(|| vec![0u8; (width * height * 4) as usize])
+        };
+
+        if raw_buffer.len() != map.len() {
+          raw_buffer.resize(map.len(), 0);
+        }
+        raw_buffer.copy_from_slice(map.as_slice());
+
+        let _ = raw_frame_tx.try_send((raw_buffer, width, height));
 
         Ok(gstreamer::FlowSuccess::Ok)
       })
