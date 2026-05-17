@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UiMessage {
-  AuthRequest(String, String),
+  AuthRequest(String, String, String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

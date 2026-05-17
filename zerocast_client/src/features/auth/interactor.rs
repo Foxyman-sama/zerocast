@@ -15,7 +15,7 @@ pub async fn run_auth_interactor(
 ) {
   while let Some(msg) = ui_rx.recv().await {
     match msg {
-      UiMessage::AuthRequest(login, password) => {
+      UiMessage::AuthRequest(server_ip, login, password) => {
         // 1. Set status to Pending to trigger the UI loading spinner.
         {
           let mut status = auth_status.lock().await;
@@ -23,7 +23,7 @@ pub async fn run_auth_interactor(
         }
 
         // 2. Perform the actual network request to the server
-        let result = perform_server_auth(login, password).await;
+        let result = perform_server_auth(server_ip, login, password).await;
 
         // 3. Process the server's network response
         let mut status = auth_status.lock().await;
@@ -44,15 +44,19 @@ pub async fn run_auth_interactor(
 
 /// Established a real TCP connection to transmit credentials and receive validation response.
 async fn perform_server_auth(
+  server_ip: String,
   login: String,
   password: String,
 ) -> Result<(), String> {
   if login.is_empty() || password.is_empty() {
     return Err("Login or password cannot be empty.".to_string());
   }
+  if server_ip.is_empty() {
+    return Err("Server IP address cannot be empty.".to_string());
+  }
 
   // Connect to the central authentication server stream socket
-  let mut stream = TcpStream::connect("127.0.0.1:8080")
+  let mut stream = TcpStream::connect(format!("{}:8080", server_ip))
     .await
     .map_err(|e| format!("Network connection failed: {}", e))?;
 

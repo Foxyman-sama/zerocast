@@ -38,8 +38,10 @@ async fn main() -> eframe::Result<()> {
   let (system_tx, system_rx) = mpsc::channel::<SystemEvent>(1);
   let (ui_frame_tx, ui_frame_rx) = mpsc::channel::<egui::ColorImage>(2);
   let (input_tx, input_rx) = mpsc::channel::<RemoteInput>(100);
-
   let (latency_tx, latency_rx) = mpsc::channel::<f64>(10);
+
+  // Спільне сховище для IP адреси, щоб передати її між потоками UI та мережі
+  let server_ip = Arc::new(std::sync::Mutex::new("127.0.0.1".to_string()));
 
   let auth_status = Arc::new(tokio::sync::Mutex::new(AuthResult::Error(
     "Please log in to establish a secure stream link.".to_string(),
@@ -50,60 +52,7 @@ async fn main() -> eframe::Result<()> {
     run_auth_interactor(ui_rx, system_tx, auth_status_clone).await;
   });
 
-  tokio::spawn(async move {
-    let mut input_rx = input_rx;
-    if let Ok(mut stream) =
-      tokio::net::TcpStream::connect("127.0.0.1:8081").await
-    {
-      let (reader, mut writer) = stream.into_split();
-      let latency_tx_clone = latency_tx.clone();
-      tokio::spawn(async move {
-        let mut buf_reader = tokio::io::BufReader::new(reader);
-        let mut line = String::new();
-        while let Ok(n) = buf_reader.read_line(&mut line).await {
-          if n == 0 {
-            break;
-          }
-          if let Ok(ServerResponse::Pong { client_time }) =
-            serde_json::from_str::<ServerResponse>(&line)
-          {
-            let now = std::time::SystemTime::now()
-              .duration_since(std::time::UNIX_EPOCH)
-              .unwrap()
-              .as_millis() as u64;
-            let rtt = now.saturating_sub(client_time);
-            let network_latency = rtt as f64 / 2.0;
-            let _ = latency_tx_clone.try_send(network_latency);
-          }
-          line.clear();
-        }
-      });
-
-      let mut ping_timer =
-        tokio::time::interval(std::time::Duration::from_millis(500));
-      loop {
-        tokio::select! {
-            Some(event) = input_rx.recv() => {
-                if let Ok(mut json_str) = serde_json::to_string(&event) {
-                    json_str.push('\n');
-                    let _ = writer.write_all(json_str.as_bytes()).await;
-                }
-            }
-            _ = ping_timer.tick() => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
-                let ping_packet = RemoteInput::Ping { client_time: now };
-                if let Ok(mut json_str) = serde_json::to_string(&ping_packet) {
-                    json_str.push('\n');
-                    let _ = writer.write_all(json_str.as_bytes()).await;
-                }
-            }
-        }
-      }
-    }
-  });
+  let server_ip_for_eframe = Arc::clone(&server_ip);
 
   eframe::run_native(
     "ZeroCast Client",
@@ -119,6 +68,7 @@ async fn main() -> eframe::Result<()> {
         vec![0u8; 1920 * 1080 * 4],
       ]));
 
+      // Послідовний воркер обробки кадрів
       let ui_frame_tx_clone = ui_frame_tx.clone();
       let pool_for_worker = Arc::clone(&buffer_pool);
       let ctx_for_worker = ctx_clone.clone();
@@ -142,9 +92,84 @@ async fn main() -> eframe::Result<()> {
         }
       });
 
+      // Координатор успішної авторизації — запускає мережу під вказаний IP
+      let server_ip_coordinator = Arc::clone(&server_ip_for_eframe);
       tokio::spawn(async move {
         let mut system_rx = system_rx;
+        let mut input_rx = input_rx;
+
         if let Some(SystemEvent::AuthSuccess) = system_rx.recv().await {
+          // Витягуємо актуальний IP, який користувач ввів у полі UI
+          let target_host = {
+            let guard = server_ip_coordinator.lock().unwrap();
+            guard.clone()
+          };
+
+          println!(
+            "Connecting Input Engine to remote target: {}:8081",
+            target_host
+          );
+
+          // Динамічний запуск таску реплікації інпуту на цільовий пристрій
+          let target_input_host = target_host.clone();
+          tokio::spawn(async move {
+            if let Ok(mut stream) = tokio::net::TcpStream::connect(format!(
+              "{}:8081",
+              target_input_host
+            ))
+            .await
+            {
+              let (reader, mut writer) = stream.into_split();
+
+              let latency_tx_clone = latency_tx.clone();
+              tokio::spawn(async move {
+                let mut buf_reader = tokio::io::BufReader::new(reader);
+                let mut line = String::new();
+                while let Ok(n) = buf_reader.read_line(&mut line).await {
+                  if n == 0 {
+                    break;
+                  }
+                  if let Ok(ServerResponse::Pong { client_time }) =
+                    serde_json::from_str::<ServerResponse>(&line)
+                  {
+                    let now = std::time::SystemTime::now()
+                      .duration_since(std::time::UNIX_EPOCH)
+                      .unwrap()
+                      .as_millis() as u64;
+                    let rtt = now.saturating_sub(client_time);
+                    let _ = latency_tx_clone.try_send(rtt as f64 / 2.0);
+                  }
+                  line.clear();
+                }
+              });
+
+              let mut ping_timer =
+                tokio::time::interval(std::time::Duration::from_millis(500));
+              loop {
+                tokio::select! {
+                    Some(event) = input_rx.recv() => {
+                        if let Ok(mut json_str) = serde_json::to_string(&event) {
+                            json_str.push('\n');
+                            let _ = writer.write_all(json_str.as_bytes()).await;
+                        }
+                    }
+                    _ = ping_timer.tick() => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64;
+                        let ping_packet = RemoteInput::Ping { client_time: now };
+                        if let Ok(mut json_str) = serde_json::to_string(&ping_packet) {
+                            json_str.push('\n');
+                            let _ = writer.write_all(json_str.as_bytes()).await;
+                        }
+                    }
+                }
+              }
+            }
+          });
+
+          // Запуск GStreamer клієнтського конвеєра
           tokio::task::spawn_blocking(move || {
             if let Err(e) = start_gstreamer_pipeline(raw_frame_tx, buffer_pool)
             {
@@ -161,12 +186,14 @@ async fn main() -> eframe::Result<()> {
         ui_frame_rx,
         input_tx,
         latency_rx,
+        server_ip_for_eframe,
       ))
     }),
   )
 }
 
 struct ZeroCastApp {
+  ip_input: String, // Додано поле вводу IP адреси
   login_input: String,
   password_input: String,
   ui_tx: mpsc::Sender<UiMessage>,
@@ -180,6 +207,7 @@ struct ZeroCastApp {
   fps_counter: usize,
   fps_timer: std::time::Instant,
   current_fps: usize,
+  shared_ip: Arc<std::sync::Mutex<String>>,
 }
 
 impl ZeroCastApp {
@@ -190,8 +218,10 @@ impl ZeroCastApp {
     frame_rx: mpsc::Receiver<egui::ColorImage>,
     input_tx: mpsc::Sender<RemoteInput>,
     latency_rx: mpsc::Receiver<f64>,
+    shared_ip: Arc<std::sync::Mutex<String>>,
   ) -> Self {
     Self {
+      ip_input: "127.0.0.1".to_string(), // Базове значення за замовчуванням
       login_input: String::new(),
       password_input: String::new(),
       ui_tx,
@@ -204,6 +234,7 @@ impl ZeroCastApp {
       fps_counter: 0,
       fps_timer: std::time::Instant::now(),
       current_fps: 0,
+      shared_ip,
     }
   }
 }
@@ -322,14 +353,21 @@ impl eframe::App for ZeroCastApp {
             ui.heading("ZeroCast Remote Authorization");
             ui.add_space(20.0);
 
+            // НОВЕ: Поле для введення IP адреси віддаленого хоста / VM
             ui.horizontal(|ui| {
-              ui.label("Login:    ");
+              ui.label("Server IP: ");
+              ui.text_edit_singleline(&mut self.ip_input);
+            });
+            ui.add_space(8.0);
+
+            ui.horizontal(|ui| {
+              ui.label("Login:     ");
               ui.text_edit_singleline(&mut self.login_input);
             });
             ui.add_space(8.0);
 
             ui.horizontal(|ui| {
-              ui.label("Password: ");
+              ui.label("Password:  ");
               ui.add(
                 egui::TextEdit::singleline(&mut self.password_input)
                   .password(true),
@@ -346,7 +384,14 @@ impl eframe::App for ZeroCastApp {
                 ui.colored_label(egui::Color32::LIGHT_RED, reason);
                 ui.add_space(10.0);
                 if ui.button("Establish Connection").clicked() {
+                  // Зберігаємо IP в розділену пам'ять перед відправкою запиту авторизації
+                  if let Ok(mut guard) = self.shared_ip.lock() {
+                    *guard = self.ip_input.trim().to_string();
+                  }
+
+                  // ПЕРЕДАЧА IP: Передаємо IP першим параметром запиту авторизації
                   let _ = self.ui_tx.try_send(UiMessage::AuthRequest(
+                    self.ip_input.trim().to_string(),
                     self.login_input.clone(),
                     self.password_input.clone(),
                   ));
@@ -365,14 +410,14 @@ fn start_gstreamer_pipeline(
   raw_frame_tx: mpsc::Sender<(Vec<u8>, i32, i32)>,
   buffer_pool: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
 ) -> Result<(), String> {
-  gstreamer::init().map_err(|e| format!("GStreamer init error: {:?}", e))?;
+  gstreamer::init().map_err(|e| format!("GStreamer error: {:?}", e))?;
 
   let source = ElementFactory::make("udpsrc")
     .property("port", 5000i32)
     .property("buffer-size", 41_943_040i32)
     .property("do-timestamp", true)
     .build()
-    .map_err(|e| format!("Failed to create udpsrc: {:?}", e))?;
+    .map_err(|e| format!("{:?}", e))?;
 
   let caps = Caps::builder("application/x-rtp")
     .field("media", "video")
