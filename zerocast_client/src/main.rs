@@ -40,7 +40,6 @@ async fn main() -> eframe::Result<()> {
   let (input_tx, input_rx) = mpsc::channel::<RemoteInput>(100);
   let (latency_tx, latency_rx) = mpsc::channel::<f64>(10);
 
-  // Спільне сховище для IP адреси, щоб передати її між потоками UI та мережі
   let server_ip = Arc::new(std::sync::Mutex::new("127.0.0.1".to_string()));
 
   let auth_status = Arc::new(tokio::sync::Mutex::new(AuthResult::Error(
@@ -68,7 +67,6 @@ async fn main() -> eframe::Result<()> {
         vec![0u8; 1920 * 1080 * 4],
       ]));
 
-      // Послідовний воркер обробки кадрів
       let ui_frame_tx_clone = ui_frame_tx.clone();
       let pool_for_worker = Arc::clone(&buffer_pool);
       let ctx_for_worker = ctx_clone.clone();
@@ -92,14 +90,12 @@ async fn main() -> eframe::Result<()> {
         }
       });
 
-      // Координатор успішної авторизації — запускає мережу під вказаний IP
       let server_ip_coordinator = Arc::clone(&server_ip_for_eframe);
       tokio::spawn(async move {
         let mut system_rx = system_rx;
         let mut input_rx = input_rx;
 
         if let Some(SystemEvent::AuthSuccess) = system_rx.recv().await {
-          // Витягуємо актуальний IP, який користувач ввів у полі UI
           let target_host = {
             let guard = server_ip_coordinator.lock().unwrap();
             guard.clone()
@@ -110,7 +106,6 @@ async fn main() -> eframe::Result<()> {
             target_host
           );
 
-          // Динамічний запуск таску реплікації інпуту на цільовий пристрій
           let target_input_host = target_host.clone();
           tokio::spawn(async move {
             if let Ok(mut stream) = tokio::net::TcpStream::connect(format!(
@@ -169,7 +164,6 @@ async fn main() -> eframe::Result<()> {
             }
           });
 
-          // Запуск GStreamer клієнтського конвеєра
           tokio::task::spawn_blocking(move || {
             if let Err(e) = start_gstreamer_pipeline(raw_frame_tx, buffer_pool)
             {
@@ -193,7 +187,7 @@ async fn main() -> eframe::Result<()> {
 }
 
 struct ZeroCastApp {
-  ip_input: String, // Додано поле вводу IP адреси
+  ip_input: String,
   login_input: String,
   password_input: String,
   ui_tx: mpsc::Sender<UiMessage>,
@@ -221,7 +215,7 @@ impl ZeroCastApp {
     shared_ip: Arc<std::sync::Mutex<String>>,
   ) -> Self {
     Self {
-      ip_input: "127.0.0.1".to_string(), // Базове значення за замовчуванням
+      ip_input: "127.0.0.1".to_string(),
       login_input: String::new(),
       password_input: String::new(),
       ui_tx,
@@ -353,7 +347,6 @@ impl eframe::App for ZeroCastApp {
             ui.heading("ZeroCast Remote Authorization");
             ui.add_space(20.0);
 
-            // НОВЕ: Поле для введення IP адреси віддаленого хоста / VM
             ui.horizontal(|ui| {
               ui.label("Server IP: ");
               ui.text_edit_singleline(&mut self.ip_input);
@@ -384,12 +377,10 @@ impl eframe::App for ZeroCastApp {
                 ui.colored_label(egui::Color32::LIGHT_RED, reason);
                 ui.add_space(10.0);
                 if ui.button("Establish Connection").clicked() {
-                  // Зберігаємо IP в розділену пам'ять перед відправкою запиту авторизації
                   if let Ok(mut guard) = self.shared_ip.lock() {
                     *guard = self.ip_input.trim().to_string();
                   }
 
-                  // ПЕРЕДАЧА IP: Передаємо IP першим параметром запиту авторизації
                   let _ = self.ui_tx.try_send(UiMessage::AuthRequest(
                     self.ip_input.trim().to_string(),
                     self.login_input.clone(),

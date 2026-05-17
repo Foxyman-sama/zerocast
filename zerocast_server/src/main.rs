@@ -18,7 +18,7 @@ pub enum RemoteInput {
   MouseMove { x: f32, y: f32 },
   MouseDown { button: String },
   MouseUp { button: String },
-  Ping { client_time: u64 }, // Додано для вимірювання затримки
+  Ping { client_time: u64 },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
