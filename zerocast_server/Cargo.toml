@@ -13,4 +13,6 @@ gstreamer-app = { workspace = true }
 glib = { workspace = true }
 enigo = { workspace = true }
 bincode = { workspace = true }
+tokio-native-tls = { workspace = true }
+native-tls = { workspace = true }
 rand = "0.10.1"
