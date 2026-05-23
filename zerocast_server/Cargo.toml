@@ -12,4 +12,5 @@ gstreamer = { workspace = true }
 gstreamer-app = { workspace = true }
 glib = { workspace = true }
 enigo = { workspace = true }
+bincode = { workspace = true }
 rand = "0.10.1"

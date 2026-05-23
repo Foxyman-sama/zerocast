@@ -1,6 +1,6 @@
 use enigo::{Coordinate, Enigo, Mouse, Settings};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -28,16 +28,21 @@ pub async fn run_input_replication_service()
     tokio::spawn(async move {
       let mut enigo = Enigo::new(&Settings::default())
         .expect("Failed to link OS Input driver");
-      let (reader, mut writer) = socket.into_split(); // Split into independent read and write halves
-      let mut buf_reader = tokio::io::BufReader::new(reader);
-      let mut line = String::new();
+      let (mut reader, mut writer) = socket.into_split();
 
-      while let Ok(bytes_read) = buf_reader.read_line(&mut line).await {
-        if bytes_read == 0 {
+      loop {
+        let mut len_bytes = [0u8; 4];
+        if reader.read_exact(&mut len_bytes).await.is_err() {
+          break;
+        }
+        let packet_len = u32::from_le_bytes(len_bytes) as usize;
+
+        let mut payload_buf = vec![0u8; packet_len];
+        if reader.read_exact(&mut payload_buf).await.is_err() {
           break;
         }
 
-        if let Ok(event) = serde_json::from_str::<RemoteInput>(&line) {
+        if let Ok(event) = bincode::deserialize::<RemoteInput>(&payload_buf) {
           match event {
             RemoteInput::MouseMove { x, y } => {
               let target_x = (x * 1920.0) as i32;
@@ -57,16 +62,16 @@ pub async fn run_input_replication_service()
               }
             }
             RemoteInput::Ping { client_time } => {
-              // Immediate response for client-side latency calculation
               let response = ServerResponse::Pong { client_time };
-              if let Ok(mut resp_str) = serde_json::to_string(&response) {
-                resp_str.push('\n');
-                let _ = writer.write_all(resp_str.as_bytes()).await;
+              if let Ok(serialized_resp) = bincode::serialize(&response) {
+                let resp_len = serialized_resp.len() as u32;
+                if writer.write_all(&resp_len.to_le_bytes()).await.is_ok() {
+                  let _ = writer.write_all(&serialized_resp).await;
+                }
               }
             }
           }
         }
-        line.clear();
       }
     });
   }

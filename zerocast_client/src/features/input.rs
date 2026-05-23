@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RemoteInput {
@@ -23,43 +23,46 @@ pub async fn run_input_service(
   let connection_addr = format!("{}:8081", target_host);
 
   if let Ok(stream) = tokio::net::TcpStream::connect(&connection_addr).await {
-    let (reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = stream.into_split();
 
-    // Spawn asynchronous background task to capture incoming PONG packets from the host
+    // Spawn asynchronous background task to capture incoming binary PONG packets from the host
     let latency_tx_clone = latency_tx.clone();
     tokio::spawn(async move {
-      let mut buf_reader = tokio::io::BufReader::new(reader);
-      let mut line = String::new();
-      while let Ok(n) = buf_reader.read_line(&mut line).await {
-        if n == 0 {
+      loop {
+        let mut len_bytes = [0u8; 4];
+        if reader.read_exact(&mut len_bytes).await.is_err() {
+          break;
+        }
+        let packet_len = u32::from_le_bytes(len_bytes) as usize;
+
+        let mut payload_buf = vec![0u8; packet_len];
+        if reader.read_exact(&mut payload_buf).await.is_err() {
           break;
         }
 
         if let Ok(ServerResponse::Pong { client_time }) =
-          serde_json::from_str::<ServerResponse>(&line)
+          bincode::deserialize::<ServerResponse>(&payload_buf)
         {
           let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
 
-          // Round trip time split in half estimates network directional latency
           let rtt = now.saturating_sub(client_time);
           let _ = latency_tx_clone.try_send(rtt as f64 / 2.0);
         }
-        line.clear();
       }
     });
 
-    // Setup a strict interval ticks every 500ms to evaluate packet transmission speeds
     let mut ping_timer =
       tokio::time::interval(std::time::Duration::from_millis(500));
     loop {
       tokio::select! {
           Some(event) = input_rx.recv() => {
-              if let Ok(mut json_str) = serde_json::to_string(&event) {
-                  json_str.push('\n');
-                  if writer.write_all(json_str.as_bytes()).await.is_err() { break; }
+              if let Ok(serialized_bytes) = bincode::serialize(&event) {
+                  let packet_len = serialized_bytes.len() as u32;
+                  if writer.write_all(&packet_len.to_le_bytes()).await.is_err() { break; }
+                  if writer.write_all(&serialized_bytes).await.is_err() { break; }
               }
           }
           _ = ping_timer.tick() => {
@@ -69,9 +72,10 @@ pub async fn run_input_service(
                   .as_millis() as u64;
 
               let ping_packet = RemoteInput::Ping { client_time: now };
-              if let Ok(mut json_str) = serde_json::to_string(&ping_packet) {
-                  json_str.push('\n');
-                  if writer.write_all(json_str.as_bytes()).await.is_err() { break; }
+              if let Ok(serialized_bytes) = bincode::serialize(&ping_packet) {
+                  let packet_len = serialized_bytes.len() as u32;
+                  if writer.write_all(&packet_len.to_le_bytes()).await.is_err() { break; }
+                  if writer.write_all(&serialized_bytes).await.is_err() { break; }
               }
           }
       }

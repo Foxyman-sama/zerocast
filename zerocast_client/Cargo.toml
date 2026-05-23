@@ -11,4 +11,5 @@ serde_json = { workspace = true }
 gstreamer = { workspace = true }
 gstreamer-app = { workspace = true }
 enigo = { workspace = true }
+bincode = { workspace = true }
 eframe = "0.27"
