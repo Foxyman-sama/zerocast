@@ -2,43 +2,30 @@ use gstreamer::prelude::*;
 use gstreamer::{Caps, Element, ElementFactory, MessageView, Pipeline, State};
 use std::sync::Arc;
 
-/// Native low-overhead pipeline ingest via hardware D3D11 render utilities
+/// Native low-overhead pipeline ingest via hardware D3D11 render utilities and secure SRT decryption.
 pub fn start_gstreamer_pipeline(
+  target_server_ip: String,
   raw_frame_tx: tokio::sync::mpsc::Sender<(Vec<u8>, i32, i32)>,
   buffer_pool: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
 ) -> Result<(), String> {
   gstreamer::init().map_err(|e| format!("GStreamer error: {:?}", e))?;
 
-  let source = ElementFactory::make("udpsrc")
-    .property("port", 5000i32)
-    .property("buffer-size", 41_943_040i32)
-    .property("do-timestamp", true)
-    .build()
-    .map_err(|e| format!("{:?}", e))?;
-
-  let caps = Caps::builder("application/x-rtp")
-    .field("media", "video")
-    .field("clock-rate", 90000i32)
-    .field("encoding-name", "H264")
-    .field("payload", 96i32)
-    .build();
-  source.set_property("caps", &caps);
-
-  let queue1 = ElementFactory::make("queue")
-    .property("max-size-buffers", 5u32)
-    .build()
-    .unwrap();
-  let jitterbuffer = ElementFactory::make("rtpjitterbuffer")
-    .property("latency", 40u32)
-    .property("drop-on-latency", true)
-    .property("do-lost", true)
+  // internal C-enum (GstSRTKeyLength) mapping instead of casting as standard gint.
+  let source = ElementFactory::make("srtsrc")
+    .property(
+      "uri",
+      format!("srt://{}:5000?mode=caller", target_server_ip),
+    )
+    .property("passphrase", "SuperSecureZeroCastKey2026")
+    .property_from_str("pbkeylen", "16") // "16" string directly resolves into GstSRTKeyLength::Aes128
     .build()
     .unwrap();
 
-  let depay = ElementFactory::make("rtph264depay").build().unwrap();
+  // Because SRT natively handles packet ordering and dropouts, rtpjitterbuffer and rtph264depay are completely bypassed.
+  // Incoming network data flows directly into the h264parse element.
   let parse = ElementFactory::make("h264parse").build().unwrap();
-  let queue2 = ElementFactory::make("queue")
-    .property("max-size-buffers", 5u32)
+  let queue1 = ElementFactory::make("queue")
+    .property("max-size-buffers", 3u32)
     .build()
     .unwrap();
   let decode = ElementFactory::make("d3d11h264dec").build().unwrap();
@@ -64,16 +51,13 @@ pub fn start_gstreamer_pipeline(
     &Caps::builder("video/x-raw").field("format", "RGBA").build(),
   );
 
-  let pipeline = Pipeline::with_name("client-render-pipeline");
+  let pipeline = Pipeline::with_name("client-secure-render-pipeline");
 
   pipeline
     .add_many([
       &source,
-      &queue1,
-      &jitterbuffer,
-      &depay,
       &parse,
-      &queue2,
+      &queue1,
       &decode,
       &gpu_convert,
       &client_gpu_caps,
@@ -84,11 +68,8 @@ pub fn start_gstreamer_pipeline(
 
   Element::link_many([
     &source,
-    &queue1,
-    &jitterbuffer,
-    &depay,
     &parse,
-    &queue2,
+    &queue1,
     &decode,
     &gpu_convert,
     &client_gpu_caps,
@@ -97,7 +78,7 @@ pub fn start_gstreamer_pipeline(
   ])
   .unwrap();
 
-  // Hook appsink callbacks directly into our lock-free buffer recycling loop
+  // Hook appsink callbacks directly into our lock-free buffer recycling loop to extract decrypted RGBA pixels
   appsink.set_callbacks(
     gstreamer_app::AppSinkCallbacks::builder()
       .new_sample(move |sink| {
@@ -117,7 +98,7 @@ pub fn start_gstreamer_pipeline(
           .get("height")
           .map_err(|_| gstreamer::FlowError::Error)?;
 
-        // Recoup an existing heap vector slice from the memory reuse pool
+        // Recoup an existing heap vector slice from the memory reuse pool to prevent heap allocation thrashing
         let mut raw_buffer = {
           let mut pool = buffer_pool.lock().unwrap();
           pool
@@ -130,6 +111,7 @@ pub fn start_gstreamer_pipeline(
         }
         raw_buffer.copy_from_slice(map.as_slice());
 
+        // Send the raw RGBA frame texture back to the main UI loop thread context
         let _ = raw_frame_tx.try_send((raw_buffer, width, height));
 
         Ok(gstreamer::FlowSuccess::Ok)
@@ -140,6 +122,9 @@ pub fn start_gstreamer_pipeline(
   pipeline
     .set_state(State::Playing)
     .map_err(|e| format!("{:?}", e))?;
+  println!(
+    "[MEDIA] Connected to secure SRT server video stream. Stream decrypted natively."
+  );
 
   let bus = pipeline.bus().unwrap();
   for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {

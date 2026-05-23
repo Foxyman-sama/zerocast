@@ -96,14 +96,18 @@ async fn main() -> eframe::Result<()> {
           );
 
           // Dynamic instantiation of remote control pipeline tasks
+          let target_input_host = target_host.clone();
           tokio::spawn(async move {
-            run_input_service(target_host, input_rx, latency_tx).await;
+            run_input_service(target_input_host, input_rx, latency_tx).await;
           });
 
-          // Offload synchronous blocking GStreamer bus handlers out of Tokio's primary executors
+          let target_media_host = target_host.clone();
           tokio::task::spawn_blocking(move || {
-            if let Err(e) = start_gstreamer_pipeline(raw_frame_tx, buffer_pool)
-            {
+            if let Err(e) = start_gstreamer_pipeline(
+              target_media_host,
+              raw_frame_tx,
+              buffer_pool,
+            ) {
               eprintln!("GStreamer pipeline execution failure: {}", e);
             }
           });
