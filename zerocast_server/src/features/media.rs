@@ -39,14 +39,14 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     .build()
     .unwrap();
 
-  // 2. DYNAMIC ENCODER RESOLUTION (Bypasses hard NVIDIA hardware restrictions)
+  // 2. DYNAMIC ENCODER RESOLUTION
   let encoder = if let Ok(nv_enc) = ElementFactory::make("nvh264enc").build() {
     println!(
       "[MEDIA] NVIDIA Discrete Core detected. Mounting NVENC pipeline..."
     );
     nv_enc.set_property_from_str("preset", "low-latency-hp");
     nv_enc.set_property_from_str("rc-mode", "cbr");
-    nv_enc.set_property("bitrate", 12000u32); // High-fidelity 12 Mbps stream 
+    nv_enc.set_property("bitrate", 12000u32);
     nv_enc.set_property("gop-size", 60i32);
     nv_enc.set_property("bframes", 0u32);
     nv_enc.set_property("rc-lookahead", 0u32);
@@ -57,8 +57,8 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
       "[MEDIA] NVIDIA hardware absent. Initializing low-overhead OpenH264 fallback context..."
     );
     openh264_enc.set_property_from_str("usage-type", "screen"); // Optimizes block matching for static UI text
-    openh264_enc.set_property_from_str("rate-control", "cbr");
-    openh264_enc.set_property("bitrate", 6000u32); // 6 Mbps balances network throughput with laptop CPU usage
+    openh264_enc.set_property_from_str("rate-control", "bitrate");
+    openh264_enc.set_property("bitrate", 6000u32); // 6 Mbps optimizes stream delivery on laptop processors
     openh264_enc.set_property("gop-size", 60u32);
     openh264_enc
   } else if let Ok(x264_enc) = ElementFactory::make("x264enc").build() {
@@ -66,7 +66,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
       "[MEDIA] OpenH264 unavailable. Initializing standard x264 software context..."
     );
     x264_enc.set_property_from_str("tune", "zerolatency");
-    x264_enc.set_property_from_str("speed-preset", "ultrafast"); // Minimizes encoding thread barriers on mobile CPUs
+    x264_enc.set_property_from_str("speed-preset", "ultrafast");
     x264_enc.set_property("bitrate", 6000u32);
     x264_enc.set_property("key-int-max", 60u32);
     x264_enc
@@ -79,7 +79,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
 
   let pipeline = Pipeline::with_name("zerocast-secure-capture-pipeline");
 
-  // 3. Assemble structural layout elements (Remains fully compatible regardless of encoder choice)
+  // 3. Assemble structural layout elements
   pipeline
     .add_many([
       &source,
