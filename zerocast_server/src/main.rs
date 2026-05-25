@@ -11,6 +11,8 @@ use features::auth::session::SessionStore;
 use features::input::run_input_replication_service;
 use features::media::run_media_pipeline;
 
+use std::net::UdpSocket;
+
 #[tokio::main]
 async fn main() {
   // 1. Data layer initialization and host credentials generation
@@ -22,8 +24,13 @@ async fn main() {
     *guard = Some(creds.clone());
   }
 
+  // Dynamic resolution of the network interface token assigned by the local router node
+  let local_lan_ip =
+    get_local_routing_ip().unwrap_or_else(|| "127.0.0.1".to_string());
+
   println!("=====================================================");
   println!("     ZEROCAST SERVER HARDWARE ENGINE INITIALIZED     ");
+  println!("     HOST IP: {} | AUTH: 8080 | INPUT: 8081", local_lan_ip);
   println!("     LOGIN: {} | PASSWORD: {}", creds.login, creds.password);
   println!("=====================================================");
 
@@ -45,8 +52,10 @@ async fn main() {
     }
   });
 
+  // Display the exact instruction for the operator matching your true network topography
   println!(
-    "Waiting for an authorized client connection to initialize streaming..."
+    "Waiting for an authorized client connection... Connect client to target endpoint at {}",
+    local_lan_ip
   );
 
   // Block main execution until a valid client completes the handshake loop
@@ -112,4 +121,17 @@ async fn run_auth_service(
       }
     });
   }
+}
+
+/// Queries the local OS routing table to extract the active LAN IP assigned by the router
+fn get_local_routing_ip() -> Option<String> {
+  // Bind to any local port allocation slot
+  let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+
+  // Connecting to a public IP forces the OS to resolve the true outbound network interface channel.
+  // Zero packets are dispatched on the wire since UDP requires no active handshake connection protocol.
+  socket.connect("8.8.8.8:80").ok()?;
+
+  // Extract the local IP component from the resolved socket address structure
+  socket.local_addr().ok().map(|addr| addr.ip().to_string())
 }
