@@ -17,6 +17,9 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
   let parse = ElementFactory::make("h264parse").build().unwrap();
   let queue = ElementFactory::make("queue").build().unwrap();
 
+  // Dynamically bridges format gaps (e.g., NV12 to I420) for software encoders
+  let videoconvert = ElementFactory::make("videoconvert").build().unwrap();
+
   let sink = ElementFactory::make("srtsink")
     .property("uri", "srt://0.0.0.0:5000?mode=listener")
     .property("passphrase", "SuperSecureZeroCastKey2026")
@@ -56,9 +59,9 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     println!(
       "[MEDIA] NVIDIA hardware absent. Initializing low-overhead OpenH264 fallback context..."
     );
-    openh264_enc.set_property_from_str("usage-type", "screen"); // Optimizes block matching for static UI text
+    openh264_enc.set_property_from_str("usage-type", "screen");
     openh264_enc.set_property_from_str("rate-control", "bitrate");
-    openh264_enc.set_property("bitrate", 6000u32); // 6 Mbps optimizes stream delivery on laptop processors
+    openh264_enc.set_property("bitrate", 6000u32);
     openh264_enc.set_property("gop-size", 60u32);
     openh264_enc
   } else if let Ok(x264_enc) = ElementFactory::make("x264enc").build() {
@@ -79,7 +82,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
 
   let pipeline = Pipeline::with_name("zerocast-secure-capture-pipeline");
 
-  // 3. Assemble structural layout elements
+  // 3. Assemble structural layout elements (Including videoconvert)
   pipeline
     .add_many([
       &source,
@@ -88,6 +91,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
       &gpu_caps,
       &d3d11download,
       &cpu_caps,
+      &videoconvert, // Mounted into the pipeline ecosystem
       &encoder,
       &parse,
       &queue,
@@ -102,6 +106,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     &gpu_caps,
     &d3d11download,
     &cpu_caps,
+    &videoconvert, // Linked directly between caps resolution and the target encoder
     &encoder,
     &parse,
     &queue,
