@@ -3,13 +3,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_native_tls::TlsConnector;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum RemoteInput {
-  MouseMove { x: f32, y: f32 },
-  MouseDown { button: String },
-  MouseUp { button: String },
-  Ping { client_time: u64 },
-}
+use egui::{Event, Key};
+pub use zerocast_core::input::RemoteInput;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ServerResponse {
@@ -116,5 +111,54 @@ pub async fn run_input_service(
         net_err
       );
     }
+  }
+}
+
+pub fn handle_client_keyboard_input(
+  ctx: &egui::Context,
+  tx: &tokio::sync::mpsc::Sender<RemoteInput>,
+) {
+  ctx.input(|i| {
+    for event in &i.events {
+      match event {
+        Event::Key {
+          key,
+          pressed,
+          modifiers: _,
+          ..
+        } => {
+          // Map egui::Key enums to Windows Virtual Key codes
+          if let Some(vk_code) = map_egui_key_to_vk(*key) {
+            let input_msg = if *pressed {
+              RemoteInput::KeyPress { key_code: vk_code }
+            } else {
+              RemoteInput::KeyRelease { key_code: vk_code }
+            };
+
+            // Dispatch asynchronously to the TLS network worker loop
+            let _ = tx.try_send(input_msg);
+          }
+        }
+        _ => {}
+      }
+    }
+  });
+}
+
+/// Helper to map common egui layout keys to standard Windows Virtual Keys (VK_*)
+fn map_egui_key_to_vk(key: Key) -> Option<u16> {
+  match key {
+    Key::A => Some(0x41),
+    Key::B => Some(0x42),
+    Key::C => Some(0x43),
+    Key::D => Some(0x44),
+    Key::E => Some(0x45),
+    Key::F => Some(0x46),
+    Key::Enter => Some(0x0D),
+    Key::Escape => Some(0x1B),
+    Key::Space => Some(0x20),
+    Key::Backspace => Some(0x08),
+    Key::Tab => Some(0x09),
+    _ => None, // Expand mappings as required by the systems layout specification
   }
 }

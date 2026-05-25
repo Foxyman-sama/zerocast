@@ -14,4 +14,5 @@ enigo = { workspace = true }
 bincode = { workspace = true }
 tokio-native-tls = { workspace = true }
 native-tls = { workspace = true }
-eframe = "0.27"
+eframe = "0.26"
+egui = "0.26"

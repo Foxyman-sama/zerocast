@@ -51,6 +51,8 @@ impl ZeroCastApp {
 
 impl eframe::App for ZeroCastApp {
   fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    super::input::handle_client_keyboard_input(ctx, &self.input_tx);
+
     // 1. Process inbound telemetry signals from network background jobs
     while let Ok(latency) = self.latency_rx.try_recv() {
       self.current_latency = latency;

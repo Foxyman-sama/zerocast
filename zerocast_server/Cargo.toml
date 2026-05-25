@@ -16,3 +16,7 @@ bincode = { workspace = true }
 tokio-native-tls = { workspace = true }
 native-tls = { workspace = true }
 rand = "0.10.1"
+sysinfo = "0.30"
+windows = { version = "0.52", features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+] }

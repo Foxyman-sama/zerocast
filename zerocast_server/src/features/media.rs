@@ -3,7 +3,7 @@ use gstreamer::{Element, ElementFactory, MessageView, Pipeline, State};
 
 /// Native GStreamer pipeline for hardware accelerated screen capture (D3D11),
 /// NVENC video encoding, and secure SRT streaming wrapped in AES-128 encryption.
-pub fn run_media_pipeline(client_ip: std::net::IpAddr) -> Result<(), String> {
+pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
   gstreamer::init()
     .map_err(|e| format!("GStreamer initialization error: {:?}", e))?;
 

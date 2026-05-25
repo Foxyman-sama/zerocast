@@ -4,7 +4,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use zerocast_core::auth::{AuthRequest, AuthResponse};
 
-mod features;
+use zerocast_server::features;
 
 use features::auth::interactor::AuthInteractor;
 use features::auth::session::SessionStore;

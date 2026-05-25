@@ -7,13 +7,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_native_tls::TlsAcceptor;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum RemoteInput {
-  MouseMove { x: f32, y: f32 },
-  MouseDown { button: String },
-  MouseUp { button: String },
-  Ping { client_time: u64 },
-}
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+  INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
+};
+
+pub use zerocast_core::input::RemoteInput;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ServerResponse {
@@ -27,7 +25,6 @@ pub async fn run_input_replication_service()
   println!("[INPUT] Secured Service successfully bound to port 8081");
 
   // 1. Initialize local cryptographic identity profile from PKCS#12 store
-  // Resolves the absolute path relative to the crate's manifest location
   let manifest_dir =
     std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
   let cert_path = std::path::Path::new(&manifest_dir).join("identity.p12");
@@ -107,6 +104,14 @@ pub async fn run_input_replication_service()
                       .button(enigo::Button::Left, enigo::Direction::Release);
                   }
                 }
+                RemoteInput::KeyPress { key_code } => {
+                  // Call native Win32 SendInput subsystem directly
+                  inject_windows_key(key_code, false);
+                }
+                RemoteInput::KeyRelease { key_code } => {
+                  // Call native Win32 SendInput subsystem directly
+                  inject_windows_key(key_code, true);
+                }
                 RemoteInput::Ping { client_time } => {
                   let response = ServerResponse::Pong { client_time };
                   if let Ok(serialized_resp) = bincode::serialize(&response) {
@@ -133,5 +138,57 @@ pub async fn run_input_replication_service()
         }
       }
     });
+  }
+}
+
+/// Entry point dispatched from the asynchronous TLS socket read loop coordinator
+pub fn process_remote_input_event(event: RemoteInput) {
+  match event {
+    RemoteInput::KeyPress { key_code } => {
+      inject_windows_key(key_code, false);
+    }
+    RemoteInput::KeyRelease { key_code } => {
+      inject_windows_key(key_code, true);
+    }
+    RemoteInput::Ping { .. } => {
+      // Echo back or update internal RTT tracking if needed
+    }
+    _ => {} // Mouse handling logic goes here
+  }
+}
+
+/// Dispatches raw synthetic keyboard strokes straight into the OS kernel event subsystem
+fn inject_windows_key(vk_code: u16, is_key_up: bool) {
+  unsafe {
+    // If it's a release event, assign the appropriate Windows flag wrapper; otherwise 0 (press)
+    let dw_flags = if is_key_up {
+      KEYEVENTF_KEYUP
+    } else {
+      Default::default()
+    };
+
+    let input_element = INPUT {
+      r#type: INPUT_KEYBOARD,
+      Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+        ki: KEYBDINPUT {
+          wVk: VIRTUAL_KEY(vk_code),
+          wScan: 0, // 0 defaults tracking to the Virtual Key code mapping channel
+          dwFlags: dw_flags,
+          time: 0, // 0 lets the system assign its own sequential timestamp ticks
+          dwExtraInfo: 0,
+        },
+      },
+    };
+
+    // Inject the structure directly into the input queue stream
+    let inputs = [input_element];
+    let num_sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+
+    if num_sent == 0 {
+      eprintln!(
+        "[INPUT ERROR] OS refused kernel injection for VK code: 0x{:X}",
+        vk_code
+      );
+    }
   }
 }
