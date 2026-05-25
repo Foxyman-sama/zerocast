@@ -19,6 +19,7 @@ pub struct ZeroCastApp {
   fps_timer: std::time::Instant,
   current_fps: usize,
   shared_ip: Arc<std::sync::Mutex<String>>,
+  last_modifiers: egui::Modifiers,
 }
 
 impl ZeroCastApp {
@@ -45,13 +46,18 @@ impl ZeroCastApp {
       fps_timer: std::time::Instant::now(),
       current_fps: 0,
       shared_ip,
+      last_modifiers: egui::Modifiers::default(),
     }
   }
 }
 
 impl eframe::App for ZeroCastApp {
   fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-    super::input::handle_client_keyboard_input(ctx, &self.input_tx);
+    super::input::handle_client_keyboard_input(
+      ctx,
+      &self.input_tx,
+      &mut self.last_modifiers,
+    );
 
     // 1. Process inbound telemetry signals from network background jobs
     while let Ok(latency) = self.latency_rx.try_recv() {
