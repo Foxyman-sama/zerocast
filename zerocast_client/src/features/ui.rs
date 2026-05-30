@@ -1,8 +1,9 @@
 use super::input::RemoteInput;
 use crate::shared::events::{AuthResult, UiMessage};
 use eframe::egui;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::Arc;
-
 pub struct ZeroCastApp {
   pub ip_input: String,
   pub login_input: String,
@@ -62,6 +63,7 @@ impl eframe::App for ZeroCastApp {
     // 1. Process inbound telemetry signals from network background jobs
     while let Ok(latency) = self.latency_rx.try_recv() {
       self.current_latency = latency;
+      append_telemetry_to_csv(latency, self.current_fps);
     }
 
     let mut latest_frame = None;
@@ -223,5 +225,21 @@ impl eframe::App for ZeroCastApp {
         });
       }
     });
+  }
+}
+
+/// Appends raw live telemetry fields directly into a local CSV storage tract
+fn append_telemetry_to_csv(latency: f64, fps: usize) {
+  if let Ok(mut file) = OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open("live_latency_records.csv")
+  {
+    // Check if the file is new to dynamically write the headers
+    if file.metadata().map(|m| m.len() == 0).unwrap_or(false) {
+      let _ = writeln!(file, "Latency_MS,Current_FPS");
+    }
+    // Save the execution data snapshot
+    let _ = writeln!(file, "{:.2},{}", latency, fps);
   }
 }
