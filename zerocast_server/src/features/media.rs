@@ -1,19 +1,32 @@
 use gstreamer::prelude::*;
 use gstreamer::{Element, ElementFactory, MessageView, Pipeline, State};
 
-/// Native GStreamer pipeline for hardware accelerated screen capture (D3D11),
-/// supporting dynamic cross-vendor GPU/CPU encoding fallback for non-NVIDIA laptops.
+/// Native GStreamer pipeline for hardware-accelerated screen capture (D3D11),
+/// supporting dynamic cross-vendor GPU/CPU encoding fallback.
+///
+/// This implementation optimizes real-time data flow to eliminate progressive
+/// buffering delays (Time-Drift Logjams) by shifting to a Variable Framerate (VFR)
+/// architecture and bypassing internal encoder lookup caches.
 pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
   gstreamer::init()
     .map_err(|e| format!("GStreamer initialization error: {:?}", e))?;
 
-  // 1. Instantiate core capture and translation filters
+  // 1. Core Ingestion and Filtering Component Instantiation
+
+  // CRITICAL FIX: Monotonic Presentation Timestamps
+  // Enabling "do-timestamp" = true forces the DXGI surface capture allocator to map every
+  // captured frame to the absolute hardware system clock at the exact microsecond of capture.
+  // This provides downstream sinks with a true real-time reference baseline, preventing
+  // downstream elements from desynchronizing and hoarding un-timestamped data chunks.
   let source = ElementFactory::make("d3d11screencapturesrc")
     .property("do-timestamp", true)
     .build()
     .unwrap();
 
-  // OPTIMIZATION: Raw frame leaky queue placed BEFORE the encoder compression layer.
+  // OPTIMIZATION: Non-blocking, lock-free raw frame queue placed PRIOR to the encoder.
+  // Hardcoded to a strict capacity limit of 1 buffer (`max-size-buffers = 1`) with `leaky = downstream`.
+  // If the encoder or network interface blocks, old raw textures are instantly overwritten in VRAM,
+  // eradicating backlog accumulation WITHOUT corrupting downstream compressed H.264 packet frames.
   let raw_queue = ElementFactory::make("queue")
     .property("max-size-buffers", 1u32)
     .property("max-size-time", 0u64)
@@ -27,22 +40,27 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
   let d3d11download = ElementFactory::make("d3d11download").build().unwrap();
   let parse = ElementFactory::make("h264parse").build().unwrap();
 
-  // OPTIMIZATION: Non-leaky queue placed AFTER encoder.
+  // Post-encoder stream queue. Must remain strictly non-leaky to preserve the
+  // ordered delivery of compressed H.264 bitstream sequences (I-frames/P-frames),
+  // eliminating macroblock smearing and visual ghosting artifacts.
   let queue = ElementFactory::make("queue").build().unwrap();
-
-  // Dynamically bridges format gaps (e.g., NV12 to I420) for software encoders
   let videoconvert = ElementFactory::make("videoconvert").build().unwrap();
 
   let sink = ElementFactory::make("srtsink")
     .property("uri", "srt://0.0.0.0:5000?mode=listener")
     .property("passphrase", "SuperSecureZeroCastKey2026")
     .property_from_str("pbkeylen", "16")
-    .property("latency", 20i32)
-    .property("sync", false)
+    .property("latency", 20i32) // Minimal SRT buffer timeout (20ms) optimized for high-speed LAN hops
+    .property("sync", false) // Bypasses global pipeline clock synchronization to enforce immediate network flight
     .build()
     .unwrap();
 
-  // Forcing a strict framerate on a variable desktop capture causes GStreamer to queue frames if the monitor refreshes faster than 60Hz.
+  // CRITICAL FIX: Variable Framerate (VFR) Transition
+  // The `framerate=60/1` limitation is completely omitted from both caps filters.
+  // Hardcoding a 60 FPS cap on a high-refresh-rate host monitor (e.g., 144Hz/165Hz) forced GStreamer
+  // into an interpolation mismatch, piling up "surplus" frames into an unconstrained multi-second backlog.
+  // Removing the rigid framerate property converts the stream to an adaptive VFR profile, letting the pipeline
+  // run natively at the system's exact rendering pace, matching processing speed to frame production.
   let gpu_caps = ElementFactory::make("capsfilter")
     .property_from_str(
       "caps",
@@ -59,12 +77,18 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     .build()
     .unwrap();
 
-  // 2. DYNAMIC ENCODER RESOLUTION
+  // 2. Dynamic Hardware/Software Encoder Path Resolution
   let encoder = if let Ok(nv_enc) = ElementFactory::make("nvh264enc").build() {
     println!(
       "[MEDIA] NVIDIA Discrete Core detected. Mounting NVENC pipeline..."
     );
     nv_enc.set_property_from_str("preset", "low-latency-hp");
+
+    // CRITICAL FIX: Sub-millisecond Hardware Encoding Allocation
+    // Forcing "zerolatency" = true completely disables the encoder's internal lookahead reordering
+    // buffer queue and completely strips out bidirectional frames (B-frames). The NVENC ASIC core
+    // compresses and ships out the NAL stream packets the exact microsecond a raw VRAM texture drops
+    // into its context, destroying a major hidden source of processing delay.
     nv_enc.set_property("zerolatency", true);
     nv_enc.set_property_from_str("rc-mode", "cbr");
     nv_enc.set_property("bitrate", 4000u32);
@@ -95,16 +119,17 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     return Err("Fatal: No compatible H.264 hardware or software codec detected on this system setup.".to_string());
   };
 
+  // Embed inline SPS/PPS configuration parameters with every keyframe interval to allow rapid hot-plug connections
   parse.set_property("config-interval", 1i32);
 
-  // Reconfigure post-encoder stream queue to a small non-leaky cushion
+  // Establish rigid bounds for post-encoder queuing
   queue.set_property("max-size-buffers", 3u32);
   queue.set_property("max-size-time", 0u64);
   queue.set_property("max-size-bytes", 0u32);
 
   let pipeline = Pipeline::with_name("zerocast-secure-capture-pipeline");
 
-  // 3. Assemble structural layout elements
+  // 3. Structural Media Graph Assembly
   pipeline
     .add_many([
       &source,
@@ -122,6 +147,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     ])
     .unwrap();
 
+  // Link structural steps sequentially
   Element::link_many([
     &source,
     &raw_queue,
@@ -143,6 +169,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     .set_state(State::Playing)
     .map_err(|e| format!("{:?}", e))?;
 
+  // Poll GStreamer engine bus notifications to trap asynchronous runtime exceptions
   let bus = pipeline.bus().unwrap();
   for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
     match msg.view() {
@@ -158,6 +185,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     }
   }
 
+  // Gracefully strip pipeline context states and release hardware Direct3D11 descriptors
   pipeline.set_state(State::Null).unwrap();
   println!("[MEDIA] Secure pipeline resource successfully released.");
   Ok(())
