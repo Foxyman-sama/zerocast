@@ -9,12 +9,12 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
 
   // 1. Instantiate core capture and translation filters
   let source = ElementFactory::make("d3d11screencapturesrc")
+    .property("do-timestamp", true) // <-- CRITICAL FIX: Injects Presentation Timestamps (PTS) to prevent the 5s network buffer timeout
     .build()
     .unwrap();
 
   // OPTIMIZATION: Raw frame leaky queue placed BEFORE the encoder compression layer.
-  // Drops uncompressed raw pixel frames when network capacity bottlenecks,
-  // effectively preventing 7-10 second delays while completely evading H.264 reference ghosting.
+  // Drops uncompressed raw pixel frames when network capacity bottlenecks.
   let raw_queue = ElementFactory::make("queue")
     .property("max-size-buffers", 1u32)
     .property("max-size-time", 0u64)
@@ -39,7 +39,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     .property("uri", "srt://0.0.0.0:5000?mode=listener")
     .property("passphrase", "SuperSecureZeroCastKey2026")
     .property_from_str("pbkeylen", "16")
-    .property("latency", 200i32) // OPTIMIZATION: Increased to 200ms to provide a 3x RTT buffer window for 50-80ms links
+    .property("latency", 20i32) // <-- CRITICAL FIX: Dropped to 20ms for instant transmission over LAN
     .property("sync", false)
     .build()
     .unwrap();
@@ -63,8 +63,9 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
       "[MEDIA] NVIDIA Discrete Core detected. Mounting NVENC pipeline..."
     );
     nv_enc.set_property_from_str("preset", "low-latency-hp");
+    nv_enc.set_property("zerolatency", true);
     nv_enc.set_property_from_str("rc-mode", "cbr");
-    nv_enc.set_property("bitrate", 4000u32); // OPTIMIZATION: Dropped from 12Mbps to 4Mbps to accommodate real Wi-Fi/LAN capabilities
+    nv_enc.set_property("bitrate", 4000u32);
     nv_enc.set_property("gop-size", 60i32);
     nv_enc.set_property("bframes", 0u32);
     nv_enc.set_property("rc-lookahead", 0u32);
@@ -76,7 +77,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     );
     openh264_enc.set_property_from_str("usage-type", "screen");
     openh264_enc.set_property_from_str("rate-control", "bitrate");
-    openh264_enc.set_property("bitrate", 4000u32); // OPTIMIZATION: Normalized to 4Mbps target
+    openh264_enc.set_property("bitrate", 4000u32);
     openh264_enc.set_property("gop-size", 60u32);
     openh264_enc
   } else if let Ok(x264_enc) = ElementFactory::make("x264enc").build() {
@@ -85,7 +86,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     );
     x264_enc.set_property_from_str("tune", "zerolatency");
     x264_enc.set_property_from_str("speed-preset", "ultrafast");
-    x264_enc.set_property("bitrate", 4000u32); // OPTIMIZATION: Normalized to 4Mbps target
+    x264_enc.set_property("bitrate", 4000u32);
     x264_enc.set_property("key-int-max", 60u32);
     x264_enc
   } else {
@@ -95,14 +96,13 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
   parse.set_property("config-interval", 1i32);
 
   // Reconfigure post-encoder stream queue to a small non-leaky cushion
-  // to strictly preserve the H.264 packet order sequence without dropping frames mid-stream.
   queue.set_property("max-size-buffers", 3u32);
   queue.set_property("max-size-time", 0u64);
   queue.set_property("max-size-bytes", 0u32);
 
   let pipeline = Pipeline::with_name("zerocast-secure-capture-pipeline");
 
-  // 3. Assemble structural layout elements (Including new raw_queue element)
+  // 3. Assemble structural layout elements
   pipeline
     .add_many([
       &source,
@@ -122,7 +122,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
 
   Element::link_many([
     &source,
-    &raw_queue, // Linked directly following raw desktop capture source frame outputs
+    &raw_queue,
     &d3d11scale,
     &d3d11convert,
     &gpu_caps,

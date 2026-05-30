@@ -18,7 +18,7 @@ pub fn start_gstreamer_pipeline(
     )
     .property("passphrase", "SuperSecureZeroCastKey2026")
     .property_from_str("pbkeylen", "16") // Resolves internally to AES-128 configuration contexts
-    .property("latency", 200i32) // OPTIMIZATION: Synchronized to 200ms to allow proper NAK retransmission overhead across 50-80ms RTT links
+    .property("latency", 20i32) // Synchronized to 20ms to match the server's instant LAN transmission window
     .build()
     .unwrap();
 
