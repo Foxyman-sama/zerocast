@@ -10,24 +10,24 @@ pub fn start_gstreamer_pipeline(
 ) -> Result<(), String> {
   gstreamer::init().map_err(|e| format!("GStreamer error: {:?}", e))?;
 
-  // internal C-enum (GstSRTKeyLength) mapping instead of casting as standard gint.
   let source = ElementFactory::make("srtsrc")
     .property(
       "uri",
       format!("srt://{}:5000?mode=caller", target_server_ip),
     )
     .property("passphrase", "SuperSecureZeroCastKey2026")
-    .property_from_str("pbkeylen", "16") // "16" string directly resolves into GstSRTKeyLength::Aes128
+    .property_from_str("pbkeylen", "16")
+    .property("latency", 20i32)
     .build()
     .unwrap();
 
-  // Because SRT natively handles packet ordering and dropouts, rtpjitterbuffer and rtph264depay are completely bypassed.
-  // Incoming network data flows directly into the h264parse element.
   let parse = ElementFactory::make("h264parse").build().unwrap();
+
   let queue1 = ElementFactory::make("queue")
-    .property("max-size-buffers", 3u32)
+    .property("max-size-buffers", 3u32) // Small cushion to absorb Wi-Fi jitter
     .build()
     .unwrap();
+
   let decode = ElementFactory::make("d3d11h264dec").build().unwrap();
   let gpu_convert = ElementFactory::make("d3d11convert").build().unwrap();
 

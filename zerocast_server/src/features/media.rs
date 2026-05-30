@@ -78,7 +78,11 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
   };
 
   parse.set_property("config-interval", 1i32);
-  queue.set_property("max-size-buffers", 3u32);
+
+  queue.set_property("max-size-buffers", 1u32);
+  queue.set_property("max-size-time", 0u64);
+  queue.set_property("max-size-bytes", 0u32);
+  queue.set_property_from_str("leaky", "downstream");
 
   let pipeline = Pipeline::with_name("zerocast-secure-capture-pipeline");
 
