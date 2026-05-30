@@ -10,21 +10,26 @@ pub fn start_gstreamer_pipeline(
 ) -> Result<(), String> {
   gstreamer::init().map_err(|e| format!("GStreamer error: {:?}", e))?;
 
+  // 1. Instantiate the incoming SRT network source
   let source = ElementFactory::make("srtsrc")
     .property(
       "uri",
       format!("srt://{}:5000?mode=caller", target_server_ip),
     )
     .property("passphrase", "SuperSecureZeroCastKey2026")
-    .property_from_str("pbkeylen", "16")
-    .property("latency", 20i32)
+    .property_from_str("pbkeylen", "16") // Resolves internally to AES-128 configuration contexts
+    .property("latency", 200i32) // OPTIMIZATION: Synchronized to 200ms to allow proper NAK retransmission overhead across 50-80ms RTT links
     .build()
     .unwrap();
 
+  // Because SRT natively handles packet ordering and dropouts, rtpjitterbuffer and rtph264depay are completely bypassed.
+  // Incoming network data flows directly into the h264parse element.
   let parse = ElementFactory::make("h264parse").build().unwrap();
 
+  // OPTIMIZATION: Non-leaky buffer queue running at a small threshold.
+  // Must remain non-leaky to prevent dropping compressed bitstream segments, which eliminates visual ghosting artifacts.
   let queue1 = ElementFactory::make("queue")
-    .property("max-size-buffers", 3u32) // Small cushion to absorb Wi-Fi jitter
+    .property("max-size-buffers", 3u32) // Small safe cushion to absorb Wi-Fi transmission jitter
     .build()
     .unwrap();
 
@@ -43,9 +48,10 @@ pub fn start_gstreamer_pipeline(
     .dynamic_cast::<gstreamer_app::AppSink>()
     .expect("AppSink cast failed");
 
+  // Configure AppSink properties to discard backlogs and force instant presentation
   appsink.set_max_buffers(1);
   appsink.set_drop(true);
-  appsink.set_property("sync", false);
+  appsink.set_property("sync", false); // OPTIMIZATION: Keep false to entirely prevent pipeline clock presentation delays
   appsink.set_property(
     "caps",
     &Caps::builder("video/x-raw").field("format", "RGBA").build(),
@@ -53,6 +59,7 @@ pub fn start_gstreamer_pipeline(
 
   let pipeline = Pipeline::with_name("client-secure-render-pipeline");
 
+  // 2. Assemble structural pipeline components
   pipeline
     .add_many([
       &source,
@@ -119,6 +126,7 @@ pub fn start_gstreamer_pipeline(
       .build(),
   );
 
+  // 3. Kickstart video ingest execution
   pipeline
     .set_state(State::Playing)
     .map_err(|e| format!("{:?}", e))?;
