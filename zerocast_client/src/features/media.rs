@@ -17,19 +17,18 @@ pub fn start_gstreamer_pipeline(
       format!("srt://{}:5000?mode=caller", target_server_ip),
     )
     .property("passphrase", "SuperSecureZeroCastKey2026")
-    .property_from_str("pbkeylen", "16") // Resolves internally to AES-128 configuration contexts
-    .property("latency", 20i32) // Synchronized to 20ms to match the server's instant LAN transmission window
+    .property_from_str("pbkeylen", "16")
+    .property("latency", 20i32)
     .build()
     .unwrap();
 
-  // Because SRT natively handles packet ordering and dropouts, rtpjitterbuffer and rtph264depay are completely bypassed.
-  // Incoming network data flows directly into the h264parse element.
   let parse = ElementFactory::make("h264parse").build().unwrap();
 
-  // OPTIMIZATION: Non-leaky buffer queue running at a small threshold.
-  // Must remain non-leaky to prevent dropping compressed bitstream segments, which eliminates visual ghosting artifacts.
+  // OPTIMIZATION: Non-leaky buffer queue running at a strictly capped threshold.
   let queue1 = ElementFactory::make("queue")
-    .property("max-size-buffers", 3u32) // Small safe cushion to absorb Wi-Fi transmission jitter
+    .property("max-size-buffers", 3u32)
+    .property("max-size-time", 0u64) // <-- CRITICAL FIX: Forces queue to ignore default 1-second time buffers
+    .property("max-size-bytes", 0u32) // <-- CRITICAL FIX: Forces queue to ignore default byte buffers
     .build()
     .unwrap();
 
@@ -51,7 +50,7 @@ pub fn start_gstreamer_pipeline(
   // Configure AppSink properties to discard backlogs and force instant presentation
   appsink.set_max_buffers(1);
   appsink.set_drop(true);
-  appsink.set_property("sync", false); // OPTIMIZATION: Keep false to entirely prevent pipeline clock presentation delays
+  appsink.set_property("sync", false);
   appsink.set_property(
     "caps",
     &Caps::builder("video/x-raw").field("format", "RGBA").build(),
@@ -85,7 +84,7 @@ pub fn start_gstreamer_pipeline(
   ])
   .unwrap();
 
-  // Hook appsink callbacks directly into our lock-free buffer recycling loop to extract decrypted RGBA pixels
+  // Hook appsink callbacks directly into our lock-free buffer recycling loop
   appsink.set_callbacks(
     gstreamer_app::AppSinkCallbacks::builder()
       .new_sample(move |sink| {
@@ -105,7 +104,7 @@ pub fn start_gstreamer_pipeline(
           .get("height")
           .map_err(|_| gstreamer::FlowError::Error)?;
 
-        // Recoup an existing heap vector slice from the memory reuse pool to prevent heap allocation thrashing
+        // Recoup an existing heap vector slice from the memory reuse pool
         let mut raw_buffer = {
           let mut pool = buffer_pool.lock().unwrap();
           pool

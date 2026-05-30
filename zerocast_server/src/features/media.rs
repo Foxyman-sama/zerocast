@@ -9,12 +9,11 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
 
   // 1. Instantiate core capture and translation filters
   let source = ElementFactory::make("d3d11screencapturesrc")
-    .property("do-timestamp", true) // <-- CRITICAL FIX: Injects Presentation Timestamps (PTS) to prevent the 5s network buffer timeout
+    .property("do-timestamp", true)
     .build()
     .unwrap();
 
   // OPTIMIZATION: Raw frame leaky queue placed BEFORE the encoder compression layer.
-  // Drops uncompressed raw pixel frames when network capacity bottlenecks.
   let raw_queue = ElementFactory::make("queue")
     .property("max-size-buffers", 1u32)
     .property("max-size-time", 0u64)
@@ -29,7 +28,6 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
   let parse = ElementFactory::make("h264parse").build().unwrap();
 
   // OPTIMIZATION: Non-leaky queue placed AFTER encoder.
-  // Must remain non-leaky to protect structural integrity of H.264 bitstream (P-frames/I-frames).
   let queue = ElementFactory::make("queue").build().unwrap();
 
   // Dynamically bridges format gaps (e.g., NV12 to I420) for software encoders
@@ -39,20 +37,24 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     .property("uri", "srt://0.0.0.0:5000?mode=listener")
     .property("passphrase", "SuperSecureZeroCastKey2026")
     .property_from_str("pbkeylen", "16")
-    .property("latency", 20i32) // <-- CRITICAL FIX: Dropped to 20ms for instant transmission over LAN
+    .property("latency", 20i32)
     .property("sync", false)
     .build()
     .unwrap();
 
-  // Parameterize hardware filters within GPU and Host memory contexts
+  // Forcing a strict framerate on a variable desktop capture causes GStreamer to queue frames if the monitor refreshes faster than 60Hz.
   let gpu_caps = ElementFactory::make("capsfilter")
-        .property_from_str("caps", "video/x-raw(memory:D3D11Memory), width=1920, height=1080, format=NV12, framerate=60/1")
-        .build().unwrap();
+    .property_from_str(
+      "caps",
+      "video/x-raw(memory:D3D11Memory), width=1920, height=1080, format=NV12",
+    )
+    .build()
+    .unwrap();
 
   let cpu_caps = ElementFactory::make("capsfilter")
     .property_from_str(
       "caps",
-      "video/x-raw, width=1920, height=1080, format=NV12, framerate=60/1",
+      "video/x-raw, width=1920, height=1080, format=NV12",
     )
     .build()
     .unwrap();
@@ -66,7 +68,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     nv_enc.set_property("zerolatency", true);
     nv_enc.set_property_from_str("rc-mode", "cbr");
     nv_enc.set_property("bitrate", 4000u32);
-    nv_enc.set_property("gop-size", 60i32);
+    nv_enc.set_property("gop-size", 30i32);
     nv_enc.set_property("bframes", 0u32);
     nv_enc.set_property("rc-lookahead", 0u32);
     nv_enc.set_property("aud", true);
@@ -78,7 +80,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     openh264_enc.set_property_from_str("usage-type", "screen");
     openh264_enc.set_property_from_str("rate-control", "bitrate");
     openh264_enc.set_property("bitrate", 4000u32);
-    openh264_enc.set_property("gop-size", 60u32);
+    openh264_enc.set_property("gop-size", 30u32);
     openh264_enc
   } else if let Ok(x264_enc) = ElementFactory::make("x264enc").build() {
     println!(
@@ -87,7 +89,7 @@ pub fn run_media_pipeline(_client_ip: std::net::IpAddr) -> Result<(), String> {
     x264_enc.set_property_from_str("tune", "zerolatency");
     x264_enc.set_property_from_str("speed-preset", "ultrafast");
     x264_enc.set_property("bitrate", 4000u32);
-    x264_enc.set_property("key-int-max", 60u32);
+    x264_enc.set_property("key-int-max", 30u32);
     x264_enc
   } else {
     return Err("Fatal: No compatible H.264 hardware or software codec detected on this system setup.".to_string());
