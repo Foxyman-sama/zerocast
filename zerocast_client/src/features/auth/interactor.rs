@@ -1,8 +1,10 @@
 use crate::shared::events::*;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 use zerocast_core::auth::{AuthRequest, AuthResponse};
 
 pub async fn run_auth_interactor(
@@ -47,9 +49,19 @@ async fn perform_server_auth(
     return Err("Server IP address cannot be empty.".to_string());
   }
 
-  let mut stream = TcpStream::connect(format!("{}:8080", server_ip))
-    .await
-    .map_err(|e| format!("Network connection failed: {}", e))?;
+  // Define target connection socket address
+  let target_address = format!("{}:8080", server_ip);
+
+  // Wrap the connection future with an explicit 3-second timeout constraint
+  let connection_result =
+    timeout(Duration::from_secs(3), TcpStream::connect(target_address)).await;
+
+  // Unpack the timeout wrapper layer safely
+  let mut stream = match connection_result {
+      Ok(Ok(connected_stream)) => connected_stream,
+      Ok(Err(net_err)) => return Err(format!("Network connection failed: {}", net_err)),
+      Err(_) => return Err("Connection timed out. Please check your Server IP or Windows Firewall settings.".to_string()),
+  };
 
   let request = AuthRequest { login, password };
   let req_bytes = serde_json::to_vec(&request)

@@ -4,6 +4,7 @@ use eframe::egui;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::Arc;
+
 pub struct ZeroCastApp {
   pub ip_input: String,
   pub login_input: String,
@@ -53,6 +54,14 @@ impl ZeroCastApp {
 }
 
 impl eframe::App for ZeroCastApp {
+  fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    println!(
+      "[CLIENT] Window close detected. Terminating background threads safely."
+    );
+    // Terminate the process instantly to clean up asynchronous worker channels
+    std::process::exit(0);
+  }
+
   fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
     super::input::handle_client_keyboard_input(
       ctx,
