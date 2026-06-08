@@ -1,0 +1,126 @@
+@startuml Zerocast_Class_Diagram
+' Оптимізація під темний преміальний слайд 16:9
+skinparam BackgroundColor #1E1E1E
+skinparam DefaultFontName Arial
+skinparam DefaultFontSize 11
+set namespaceSeparator ::
+
+' Стилізація контейнерів (пакетів) під темний фон
+skinparam PackageFontColor #FFFFFF
+skinparam PackageBorderColor #444444
+skinparam PackageFontSize 13
+
+' Стилізація класів, структур та енумів
+skinparam class {
+    BackgroundColor #FFFFFF
+    BorderColor #FFFFFF
+    FontColor #000000
+    RoundCorner 4
+}
+
+' Контрастні неонові стрілки та БІЛИЙ текст біля них
+skinparam ArrowColor #00e5ff
+skinparam ArrowFontColor #FFFFFF
+skinparam ArrowThickness 2
+
+' Глобальний режим вирівнювання зліва направо для широкого екрана
+left to right direction
+
+package zerocast_client {
+    class ZeroCastApp {
+        + ip_input: String
+        + login_input: String
+        - auth_status: Arc<Mutex<AuthResult>>
+        - video_texture: Option<TextureHandle>
+        - buffer_pool: FrameBufferPool
+        + update(ctx: Context, frame: Frame)
+    }
+
+    enum AuthResult {
+        Pending
+        Success
+        Error(String)
+    }
+
+    enum UiMessage {
+        AuthRequest(ip: String, login: String, pass: String)
+    }
+
+    class ClientServices {
+        + run_auth_interactor()
+        + run_input_service()
+        + start_gstreamer_pipeline()
+    }
+
+    ZeroCastApp --> AuthResult : відстежує стан
+    ZeroCastApp ..> UiMessage : генерує події
+}
+
+package zerocast_core {
+    enum RemoteInput {
+        MouseMove(x: f32, y: f32)
+        MouseDown(button: String)
+        MouseUp(button: String)
+        KeyPress(key_code: u16)
+        KeyRelease(key_code: u16)
+        Ping(client_time: u64)
+    }
+
+    struct AuthRequest {
+        + login: String
+        + password: String
+    }
+
+    enum AuthResponse {
+        Success(session_token: String)
+        Failure(reason: String)
+    }
+}
+
+package zerocast_server {
+    class SessionStore {
+        + active_sessions: Mutex<Vec<Session>>
+        + HeartbeatMonitor()
+        + push_new_session(session: Session)
+        + remove_expired_sessions()
+    }
+
+    struct Session {
+        + uuid: UUIDv4
+        + username: String
+        + ip_address: IpAddr
+        + token_hash: String
+        + start_time: Instant
+    }
+
+    class AuthInteractor {
+        - rate_limiter: LeakyBucket
+        + validate_token(req: AuthRequest): AuthResponse
+        + check_brute_force(ip: IpAddr): boolean
+    }
+
+    class InputService {
+        - logic_firewall: LogicFirewall
+        + run_input_replication_service()
+        - inject_windows_key(vk_code: u16, is_key_up: bool)
+    }
+
+    class MediaPipeline {
+        + run_media_pipeline(client_ip: String)
+        - build_gstreamer_pipeline(): Pipeline
+    }
+
+    AuthInteractor --> SessionStore : оновлює стани
+    SessionStore *-- Session : агрегує дані
+}
+
+' ЖОРСТКА ФІКСАЦІЯ ПОРЯДКУ ПАКЕТІВ НА ОДНІЙ ЛІНІЇ (Клієнт -> Ядро -> Сервер)
+zerocast_client -[hidden]-> zerocast_core
+zerocast_core -[hidden]-> zerocast_server
+
+' Зв'язки взаємодії між пакетами (Dependency & Data Flow)
+ZeroCastApp ..> zerocast_core::RemoteInput : генерує та серіалізує
+InputService ..> zerocast_core::RemoteInput : десеріалізує та валідує
+AuthInteractor ..> zerocast_core::AuthRequest : автентифікує
+AuthInteractor ..> zerocast_core::AuthResponse : повертає результат
+@enduml
