@@ -82,28 +82,33 @@ def check_and_install_pip():
     """Checks for pip and installs it if missing."""
     print("[INFO] Checking for pip...")
     try:
-        subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, check=True)
+        # Check if pip is already available as a module
+        subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, check=True, shell=True)
         print("[INFO] pip is already installed.")
         return True
     except:
         print("[INFO] pip not found. Attempting to install via ensurepip...")
         try:
-            subprocess.run([sys.executable, "-m", "ensurepip", "--default-pip"], check=True)
+            subprocess.run([sys.executable, "-m", "ensurepip", "--default-pip"], check=True, shell=True)
             print("[SUCCESS] pip installed via ensurepip.")
             return True
         except:
-            print("[INFO] ensurepip failed. Attempting to download get-pip.py...")
+            print("[INFO] ensurepip failed. Attempting to download get-pip.py using PowerShell...")
             try:
-                import urllib.request
-                url = "https://bootstrap.pypa.io/get-pip.py"
-                with urllib.request.urlopen(url) as response, open("get-pip.py", 'wb') as out_file:
-                    out_file.write(response.read())
-                subprocess.run([sys.executable, "get-pip.py"], check=True)
-                os.remove("get-pip.py")
+                # Using PowerShell to download get-pip.py is more robust on Windows
+                ps_download = 'Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "get-pip.py"'
+                subprocess.run(["powershell", "-NoProfile", "-Command", ps_download], check=True)
+                
+                print("[INFO] Running get-pip.py...")
+                subprocess.run([sys.executable, "get-pip.py", "--user"], check=True, shell=True)
+                
+                if os.path.exists("get-pip.py"):
+                    os.remove("get-pip.py")
                 print("[SUCCESS] pip installed via get-pip.py.")
                 return True
             except Exception as e:
                 print(f"[ERROR] Failed to install pip: {e}")
+                print("[HINT] If you are using Windows Store Python, try installing pip manually or use a different Python distribution.")
                 return False
 
 def setup():
