@@ -1,88 +1,72 @@
-# Zerocast
+# ⚡ Zerocast
 
-**Zerocast** is a high-performance, low-latency remote desktop streaming solution built with Rust and GStreamer. It is designed for near-instant screen mirroring and remote control across a local area network (LAN), utilizing hardware-accelerated encoding (NVENC) for minimal overhead.
+**Zerocast** is a high-performance, ultra-low latency remote desktop streaming engine implemented in Rust and GStreamer. Developed as part of a Diploma project, it focuses on real-time interactivity, utilizing hardware-accelerated encoding (NVENC) and a custom protocol for minimal click-to-photon delay.
 
-## 🚀 Features
+---
 
-- **High-Performance Streaming:** Real-time desktop capture via DXGI (D3D11).
-- **Low-Latency Control:** Secure TLS-encrypted remote input replication (Mouse & Keyboard).
-- **Adaptive VFR:** Variable Framerate architecture to eliminate buffering delays.
-- **Hardware Acceleration:** Native support for NVIDIA NVENC with fallback to OpenH264 and x264.
-- **Real-Time Debug Menu:** Built-in performance overlay (F1) showing:
-  - Frame Rate (FPS).
-  - Network Latency (Click-to-Photon estimation).
-  - Server CPU & GPU (NVENC) utilization.
-  - Memory Footprint.
-- **Secure Authentication:** Dynamic credential generation for each session.
+## 🛠 Features
+- **Zero-Touch Setup:** Fully automated environment preparation.
+- **Ultra-Low Latency:** Optimized for LAN environments with DXGI desktop capture.
+- **Hardware Accelerated:** Native NVIDIA NVENC support.
+- **Secure Control:** TLS-encrypted input replication (Mouse/Keyboard).
+- **Integrated Analytics:** Real-time performance monitoring and automated reporting.
 
-## 🛠 Prerequisites
+---
 
-Before running the project, ensure you have the following installed:
+## 🚀 Quick Start (Windows)
 
-1. **Rust:** [Install Rust](https://rustup.rs/) (edition 2024 recommended).
-2. **GStreamer:** Install GStreamer (MSVC 64-bit) for Windows. 
-   - [Download GStreamer](https://gstreamer.freedesktop.org/download/#windows)
-   - Ensure `bin`, `lib`, and `include` paths are added to your environment variables or use the `setup.sh` script.
-3. **OpenSSL:** Required for secure TLS connections.
-4. **NVIDIA GPU (Optional):** For hardware-accelerated encoding (RTX series recommended).
+The project includes a **fully automated setup script** that handles the installation of all system prerequisites including Rust, GStreamer, and OpenSSL.
 
-## 📥 Setup
+### 1. Automated Installation
+Open your terminal (PowerShell or CMD) **as Administrator** and run:
+```powershell
+python quick_setup.py
+```
+This script will:
+1. Bootstrap `winget` (if missing).
+2. Install **Rust**, **GStreamer (MSVC)**, and **OpenSSL**.
+3. Configure system environment variables.
+4. Generate required **SSL Certificates**.
+5. Install Python dependencies and build the project.
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/your-repo/zerocast.git
-   cd zerocast
-   ```
+### 2. Launch the Project
+Once setup is complete, you can start the components:
 
-2. **Generate Security Certificate:**
-   The secure input service requires a PKCS#12 certificate. You can generate one using OpenSSL in the `zerocast_server` directory:
-   ```bash
-   openssl genrsa -out key.pem 2048; 
-   openssl req -new -x509 -key key.pem -out cert.pem -days 365 -subj "/CN=zerocast"; 
-   openssl pkcs12 -export -out identity.p12 -inkey key.pem -in cert.pem -password pass:zerocast; 
-   rm key.pem cert.pem
-   ```
-
-## 🎮 Running the Project
-
-### 1. Start the Server
-Run the server on the machine you want to share:
+**Start the Server (Host):**
 ```bash
 cargo run -p zerocast_server
 ```
-The server will print its LAN IP and temporary credentials (Login/Password).
 
-### 2. Start the Client
-Run the client on your local machine:
+**Start the Client (Receiver):**
 ```bash
 cargo run -p zerocast_client
 ```
-- Enter the **Server IP**.
-- Use the **Login** and **Password** provided by the server console.
-- **Press F1** once connected to toggle the performance debug menu.
 
-## 📊 Performance Testing
+---
 
-The project includes an automated benchmarking suite to generate performance reports.
+## 📊 Analytics & Benchmarking
 
-### Run Benchmarks:
+Zerocast includes an integrated suite for performance validation.
+
+**Run Automated Benchmark:**
 ```bash
-# Generate the experimental report (Markdown)
-cargo test -p zerocast_server --test performance_metrics -- --nocapture
+python analytics.py
 ```
-The results will be updated in `zerocast_server/REPORT.md`.
+This will conduct a 20-second live test, collecting FPS, CPU, and RAM metrics, then generate a `FINAL_REPORT.md` and `performance_graph.png`.
 
-### Real Data Collection:
-You can use the provided Python script to collect metrics from a live session:
-```bash
-python collect_bench_data.py
-```
+---
 
-## 📂 Project Structure
+## 📂 Repository Structure
+- `zerocast_server/`: Screen capture, encoding, and host services.
+- `zerocast_client/`: Receiver UI (`egui`) and GStreamer playback.
+- `zerocast_core/`: Shared protocol and authentication logic.
+- `analytics.py`: Consolidated performance measurement tool.
+- `quick_setup.py`: The "Zero-Touch" installation engine.
 
-- `zerocast_server/`: Host-side capture and encoding engine.
-- `zerocast_client/`: Receiver side with `egui` interface and GStreamer playback.
-- `zerocast_core/`: Shared protocol definitions for auth and input.
+---
+
+## 🎓 Academic Context
+This software was developed for a Diploma thesis focusing on high-performance remote rendering architectures. It demonstrates the efficacy of GStreamer in low-latency Rust applications.
 
 ## ⚖️ License
-This project is part of a Diploma work and is provided for educational purposes.
+Educational use only. Part of a Diploma Thesis (2026).
