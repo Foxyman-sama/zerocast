@@ -111,6 +111,22 @@ def check_and_install_pip():
                 print("[HINT] If you are using Windows Store Python, try installing pip manually or use a different Python distribution.")
                 return False
 
+def setup_venv():
+    """Creates a virtual environment and returns the path to its python executable."""
+    venv_dir = ".venv"
+    if not os.path.exists(venv_dir):
+        print(f"[INFO] Creating virtual environment in {venv_dir}...")
+        try:
+            subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True, shell=True)
+        except Exception as e:
+            print(f"[ERROR] Failed to create virtual environment: {e}")
+            return sys.executable
+
+    if os.name == 'nt':
+        return os.path.abspath(os.path.join(venv_dir, "Scripts", "python.exe"))
+    else:
+        return os.path.abspath(os.path.join(venv_dir, "bin", "python"))
+
 def setup():
     print("=== Zerocast Fully Automated Quick Setup ===")
 
@@ -178,11 +194,24 @@ def setup():
             print(f"[ERROR] Failed to generate certificate. You may need to restart your terminal.")
 
     # 4. Install Python dependencies
-    print_step("Installing Python dependencies")
-    if check_and_install_pip():
-        run_command([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-    else:
-        print("[ERROR] pip is missing and could not be installed. Please install it manually.")
+    print_step("Installing Python dependencies (using venv)")
+    venv_python = setup_venv()
+    
+    # Ensure pip is in the venv
+    try:
+        subprocess.run([venv_python, "-m", "ensurepip", "--default-pip"], capture_output=True, shell=True)
+    except:
+        pass
+
+    try:
+        # We try both normal and break-system-packages (for modern PEP 668 envs)
+        cmd = [venv_python, "-m", "pip", "install", "-r", "requirements.txt"]
+        if subprocess.run(cmd, shell=True).returncode != 0:
+            print("[INFO] Attempting with --break-system-packages...")
+            subprocess.run(cmd + ["--break-system-packages"], check=True, shell=True)
+        print("[SUCCESS] Python dependencies installed in virtual environment.")
+    except Exception as e:
+        print(f"[ERROR] Failed to install dependencies: {e}")
         sys.exit(1)
 
     # 5. Build project
@@ -192,6 +221,7 @@ def setup():
         print("\n=== Setup Complete! ===")
         print("To start the server: cargo run -p zerocast_server")
         print("To start the client: cargo run -p zerocast_client")
+        print(f"To run analytics: {os.path.relpath(venv_python)} analytics.py")
     else:
         print("\n[ERROR] Build failed. Please RESTART your terminal and run 'cargo build' manually.")
 
