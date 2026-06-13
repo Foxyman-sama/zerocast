@@ -21,7 +21,8 @@ def print_step(msg):
 
 def check_command(cmd):
     try:
-        subprocess.run([cmd, "--version"], capture_output=True, check=True, shell=True)
+        # Quote cmd just in case
+        subprocess.run(f'"{cmd}" --version', capture_output=True, check=True, shell=True)
         return True
     except:
         return False
@@ -50,11 +51,7 @@ def install_winget():
 def install_via_winget(package_id, name):
     print(f"[INFO] Installing {name} via winget...")
     try:
-        # Use --disable-interactivity to be as silent as possible
-        subprocess.run([
-            "winget", "install", "--id", package_id, 
-            "--silent", "--accept-package-agreements", "--accept-source-agreements"
-        ], check=True, shell=True)
+        subprocess.run(f'winget install --id {package_id} --silent --accept-package-agreements --accept-source-agreements', check=True, shell=True)
         print(f"[SUCCESS] {name} installed.")
         return True
     except subprocess.CalledProcessError:
@@ -63,6 +60,8 @@ def install_via_winget(package_id, name):
 
 def run_command(cmd, cwd=None, env=None):
     try:
+        if isinstance(cmd, list):
+            cmd = ' '.join(f'"{c}"' if ' ' in c else c for c in cmd)
         subprocess.run(cmd, cwd=cwd, env=env, check=True, shell=True)
         return True
     except subprocess.CalledProcessError as e:
@@ -81,26 +80,26 @@ def refresh_env():
 def check_and_install_pip():
     """Checks for pip and installs it if missing."""
     print("[INFO] Checking for pip...")
+    python_exe = f'"{sys.executable}"'
     try:
         # Check if pip is already available as a module
-        subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, check=True, shell=True)
+        subprocess.run(f'{python_exe} -m pip --version', capture_output=True, check=True, shell=True)
         print("[INFO] pip is already installed.")
         return True
     except:
         print("[INFO] pip not found. Attempting to install via ensurepip...")
         try:
-            subprocess.run([sys.executable, "-m", "ensurepip", "--default-pip"], check=True, shell=True)
+            subprocess.run(f'{python_exe} -m ensurepip --default-pip', check=True, shell=True)
             print("[SUCCESS] pip installed via ensurepip.")
             return True
         except:
             print("[INFO] ensurepip failed. Attempting to download get-pip.py using PowerShell...")
             try:
-                # Using PowerShell to download get-pip.py is more robust on Windows
                 ps_download = 'Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "get-pip.py"'
                 subprocess.run(["powershell", "-NoProfile", "-Command", ps_download], check=True)
                 
                 print("[INFO] Running get-pip.py...")
-                subprocess.run([sys.executable, "get-pip.py", "--user"], check=True, shell=True)
+                subprocess.run(f'{python_exe} get-pip.py --user', check=True, shell=True)
                 
                 if os.path.exists("get-pip.py"):
                     os.remove("get-pip.py")
@@ -108,24 +107,30 @@ def check_and_install_pip():
                 return True
             except Exception as e:
                 print(f"[ERROR] Failed to install pip: {e}")
-                print("[HINT] If you are using Windows Store Python, try installing pip manually or use a different Python distribution.")
                 return False
 
 def setup_venv():
     """Creates a virtual environment and returns the path to its python executable."""
     venv_dir = ".venv"
+    python_exe = f'"{sys.executable}"'
     if not os.path.exists(venv_dir):
         print(f"[INFO] Creating virtual environment in {venv_dir}...")
         try:
-            subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True, shell=True)
+            subprocess.run(f'{python_exe} -m venv {venv_dir}', check=True, shell=True)
         except Exception as e:
             print(f"[ERROR] Failed to create virtual environment: {e}")
             return sys.executable
 
     if os.name == 'nt':
-        return os.path.abspath(os.path.join(venv_dir, "Scripts", "python.exe"))
+        path = os.path.abspath(os.path.join(venv_dir, "Scripts", "python.exe"))
     else:
-        return os.path.abspath(os.path.join(venv_dir, "bin", "python"))
+        path = os.path.abspath(os.path.join(venv_dir, "bin", "python"))
+        
+    if os.path.exists(path):
+        return path
+    else:
+        print(f"[WARNING] Virtual environment python not found at {path}. Falling back to system python.")
+        return sys.executable
 
 def setup():
     print("=== Zerocast Fully Automated Quick Setup ===")
@@ -196,19 +201,20 @@ def setup():
     # 4. Install Python dependencies
     print_step("Installing Python dependencies (using venv)")
     venv_python = setup_venv()
+    quoted_venv_python = f'"{venv_python}"'
     
     # Ensure pip is in the venv
     try:
-        subprocess.run([venv_python, "-m", "ensurepip", "--default-pip"], capture_output=True, shell=True)
+        subprocess.run(f'{quoted_venv_python} -m ensurepip --default-pip', capture_output=True, shell=True)
     except:
         pass
 
     try:
         # We try both normal and break-system-packages (for modern PEP 668 envs)
-        cmd = [venv_python, "-m", "pip", "install", "-r", "requirements.txt"]
-        if subprocess.run(cmd, shell=True).returncode != 0:
+        install_cmd = f'{quoted_venv_python} -m pip install -r requirements.txt'
+        if subprocess.run(install_cmd, shell=True).returncode != 0:
             print("[INFO] Attempting with --break-system-packages...")
-            subprocess.run(cmd + ["--break-system-packages"], check=True, shell=True)
+            subprocess.run(install_cmd + " --break-system-packages", check=True, shell=True)
         print("[SUCCESS] Python dependencies installed in virtual environment.")
     except Exception as e:
         print(f"[ERROR] Failed to install dependencies: {e}")
