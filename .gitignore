@@ -6,5 +6,6 @@ Cargo.lock
 *.csv
 
 .venv/
-FINAL_REPORT.md
+*.md
+!README.md
 get-pip.py
