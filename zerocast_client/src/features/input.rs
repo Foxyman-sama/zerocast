@@ -7,8 +7,18 @@ use egui::{Event, Key};
 pub use zerocast_core::input::RemoteInput;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ServerTelemetry {
+  pub cpu_usage: f32,
+  pub gpu_usage: f32,
+  pub ram_usage_mb: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ServerResponse {
-  Pong { client_time: u64 },
+  Pong {
+    client_time: u64,
+    telemetry: Option<ServerTelemetry>,
+  },
 }
 
 /// Asynchronous loop executing secure remote control replication and dynamic connection latency measurements
@@ -16,6 +26,7 @@ pub async fn run_input_service(
   target_host: String,
   mut input_rx: tokio::sync::mpsc::Receiver<RemoteInput>,
   latency_tx: tokio::sync::mpsc::Sender<f64>,
+  telemetry_tx: tokio::sync::mpsc::Sender<ServerTelemetry>,
 ) {
   let connection_addr = format!("{}:8081", target_host);
   println!(
@@ -42,6 +53,7 @@ pub async fn run_input_service(
 
           // Asynchronous reader thread extracting binary structured host PONG packages
           let latency_tx_clone = latency_tx.clone();
+          let telemetry_tx_clone = telemetry_tx.clone();
           tokio::spawn(async move {
             loop {
               let mut len_bytes = [0u8; 4];
@@ -55,7 +67,7 @@ pub async fn run_input_service(
                 break;
               }
 
-              if let Ok(ServerResponse::Pong { client_time }) =
+              if let Ok(ServerResponse::Pong { client_time, telemetry }) =
                 bincode::deserialize::<ServerResponse>(&payload_buf)
               {
                 let now = std::time::SystemTime::now()
@@ -65,6 +77,10 @@ pub async fn run_input_service(
 
                 let rtt = now.saturating_sub(client_time);
                 let _ = latency_tx_clone.try_send(rtt as f64 / 2.0);
+
+                if let Some(stats) = telemetry {
+                  let _ = telemetry_tx_clone.try_send(stats);
+                }
               }
             }
             println!("[INPUT] Host telemetry read connection broke down.");

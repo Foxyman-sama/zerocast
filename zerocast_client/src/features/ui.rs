@@ -1,9 +1,44 @@
-use super::input::RemoteInput;
+use super::input::{RemoteInput, ServerTelemetry};
 use crate::shared::events::{AuthResult, UiMessage};
 use eframe::egui;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::Arc;
+
+struct MetricTracker {
+  min: f32,
+  max: f32,
+  sum: f32,
+  count: usize,
+}
+
+impl MetricTracker {
+  fn new() -> Self {
+    Self {
+      min: f32::MAX,
+      max: f32::MIN,
+      sum: 0.0,
+      count: 0,
+    }
+  }
+  fn update(&mut self, val: f32) {
+    if val < self.min {
+      self.min = val;
+    }
+    if val > self.max {
+      self.max = val;
+    }
+    self.sum += val;
+    self.count += 1;
+  }
+  fn avg(&self) -> f32 {
+    if self.count == 0 {
+      0.0
+    } else {
+      self.sum / self.count as f32
+    }
+  }
+}
 
 pub struct ZeroCastApp {
   pub ip_input: String,
@@ -16,6 +51,14 @@ pub struct ZeroCastApp {
   input_tx: tokio::sync::mpsc::Sender<RemoteInput>,
 
   latency_rx: tokio::sync::mpsc::Receiver<f64>,
+  telemetry_rx: tokio::sync::mpsc::Receiver<ServerTelemetry>,
+
+  show_debug: bool,
+  latency_track: MetricTracker,
+  cpu_track: MetricTracker,
+  gpu_track: MetricTracker,
+  ram_track: MetricTracker,
+
   current_latency: f64,
   fps_counter: usize,
   fps_timer: std::time::Instant,
@@ -31,6 +74,7 @@ impl ZeroCastApp {
     frame_rx: tokio::sync::mpsc::Receiver<egui::ColorImage>,
     input_tx: tokio::sync::mpsc::Sender<RemoteInput>,
     latency_rx: tokio::sync::mpsc::Receiver<f64>,
+    telemetry_rx: tokio::sync::mpsc::Receiver<ServerTelemetry>,
     shared_ip: Arc<std::sync::Mutex<String>>,
   ) -> Self {
     Self {
@@ -43,6 +87,12 @@ impl ZeroCastApp {
       video_texture: None,
       input_tx,
       latency_rx,
+      telemetry_rx,
+      show_debug: false,
+      latency_track: MetricTracker::new(),
+      cpu_track: MetricTracker::new(),
+      gpu_track: MetricTracker::new(),
+      ram_track: MetricTracker::new(),
       current_latency: 0.0,
       fps_counter: 0,
       fps_timer: std::time::Instant::now(),
@@ -69,10 +119,30 @@ impl eframe::App for ZeroCastApp {
       &mut self.last_modifiers,
     );
 
+    if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+      self.show_debug = !self.show_debug;
+    }
+
     // 1. Process inbound telemetry signals from network background jobs
     while let Ok(latency) = self.latency_rx.try_recv() {
       self.current_latency = latency;
-      append_telemetry_to_csv(latency, self.current_fps);
+      self.latency_track.update(latency as f32);
+    }
+
+    while let Ok(telemetry) = self.telemetry_rx.try_recv() {
+      self.cpu_track.update(telemetry.cpu_usage);
+      self.gpu_track.update(telemetry.gpu_usage);
+      self.ram_track.update(telemetry.ram_usage_mb);
+
+      let client_ram = get_client_ram();
+      append_telemetry_to_csv(
+        self.current_latency,
+        self.current_fps,
+        telemetry.cpu_usage,
+        telemetry.gpu_usage,
+        telemetry.ram_usage_mb,
+        client_ram,
+      );
     }
 
     let mut latest_frame = None;
@@ -169,8 +239,65 @@ impl eframe::App for ZeroCastApp {
                     egui::Color32::LIGHT_BLUE,
                     format!("NET: {:.1} ms", self.current_latency),
                   );
+                  ui.add_space(4.0);
+                  ui.small("Press F1 for Debug Menu");
                 });
             });
+
+          if self.show_debug {
+            egui::Window::new("🗠 System Performance Debug")
+              .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-15.0, 15.0))
+              .resizable(false)
+              .collapsible(false)
+              .title_bar(true)
+              .show(ctx, |ui| {
+                ui.set_min_width(260.0);
+
+                egui::Grid::new("debug_grid")
+                  .num_columns(4)
+                  .spacing([10.0, 4.0])
+                  .striped(true)
+                  .show(ui, |ui| {
+                    ui.label("");
+                    ui.label("MIN");
+                    ui.label("AVG");
+                    ui.label("MAX");
+                    ui.end_row();
+
+                    fn show_row(
+                      ui: &mut egui::Ui,
+                      label: &str,
+                      track: &MetricTracker,
+                      unit: &str,
+                    ) {
+                      ui.label(label);
+                      if track.count > 0 {
+                        ui.label(format!("{:.1}{}", track.min, unit));
+                        ui.label(format!("{:.1}{}", track.avg(), unit));
+                        ui.label(format!("{:.1}{}", track.max, unit));
+                      } else {
+                        ui.label("-");
+                        ui.label("-");
+                        ui.label("-");
+                      }
+                      ui.end_row();
+                    }
+
+                    show_row(ui, "Latency", &self.latency_track, "ms");
+                    show_row(ui, "Srv CPU", &self.cpu_track, "%");
+                    show_row(ui, "Srv GPU", &self.gpu_track, "%");
+                    show_row(ui, "Srv RAM", &self.ram_track, "MB");
+                  });
+
+                ui.add_space(10.0);
+                if ui.button("Reset Statistics").clicked() {
+                  self.latency_track = MetricTracker::new();
+                  self.cpu_track = MetricTracker::new();
+                  self.gpu_track = MetricTracker::new();
+                  self.ram_track = MetricTracker::new();
+                }
+              });
+          }
         } else {
           ui.centered_and_justified(|ui| {
             ui.vertical_centered(|ui| {
@@ -237,18 +364,43 @@ impl eframe::App for ZeroCastApp {
   }
 }
 
+fn get_client_ram() -> f32 {
+  let mut sys = sysinfo::System::new_all();
+  sys.refresh_all();
+  let pid = sysinfo::Pid::from(std::process::id() as usize);
+  if let Some(process) = sys.process(pid) {
+    process.memory() as f32 / 1024.0 / 1024.0
+  } else {
+    0.0
+  }
+}
+
 /// Appends raw live telemetry fields directly into a local CSV storage tract
-fn append_telemetry_to_csv(latency: f64, fps: usize) {
+fn append_telemetry_to_csv(
+  latency: f64,
+  fps: usize,
+  cpu: f32,
+  gpu: f32,
+  srv_ram: f32,
+  cli_ram: f32,
+) {
   if let Ok(mut file) = OpenOptions::new()
     .create(true)
     .append(true)
-    .open("live_latency_records.csv")
+    .open("client_metrics.csv")
   {
     // Check if the file is new to dynamically write the headers
     if file.metadata().map(|m| m.len() == 0).unwrap_or(false) {
-      let _ = writeln!(file, "Latency_MS,Current_FPS");
+      let _ = writeln!(
+        file,
+        "Latency_MS,FPS,Srv_CPU_Pct,Srv_GPU_Pct,Srv_RAM_MB,Cli_RAM_MB"
+      );
     }
     // Save the execution data snapshot
-    let _ = writeln!(file, "{:.2},{}", latency, fps);
+    let _ = writeln!(
+      file,
+      "{:.2},{},{:.1},{:.1},{:.1},{:.1}",
+      latency, fps, cpu, gpu, srv_ram, cli_ram
+    );
   }
 }

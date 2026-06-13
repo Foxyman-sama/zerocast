@@ -25,6 +25,7 @@ async fn main() -> eframe::Result<()> {
   let (ui_frame_tx, ui_frame_rx) = mpsc::channel::<egui::ColorImage>(2);
   let (input_tx, input_rx) = mpsc::channel::<features::input::RemoteInput>(100);
   let (latency_tx, latency_rx) = mpsc::channel::<f64>(10);
+  let (telemetry_tx, telemetry_rx) = mpsc::channel::<features::input::ServerTelemetry>(10);
 
   let server_ip = Arc::new(std::sync::Mutex::new("127.0.0.1".to_string()));
 
@@ -97,8 +98,9 @@ async fn main() -> eframe::Result<()> {
 
           // Dynamic instantiation of remote control pipeline tasks
           let target_input_host = target_host.clone();
+          let telemetry_tx_clone = telemetry_tx.clone();
           tokio::spawn(async move {
-            run_input_service(target_input_host, input_rx, latency_tx).await;
+            run_input_service(target_input_host, input_rx, latency_tx, telemetry_tx_clone).await;
           });
 
           let target_media_host = target_host.clone();
@@ -120,6 +122,7 @@ async fn main() -> eframe::Result<()> {
         ui_frame_rx,
         input_tx,
         latency_rx,
+        telemetry_rx,
         server_ip_for_eframe,
       ))
     }),

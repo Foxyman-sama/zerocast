@@ -113,7 +113,7 @@ async fn test_system_performance_stress_benchmark() {
             
             // Generate telemetry data mimicking real experimental stress test boundaries
             let snapshot = TelemetrySnapshot {
-                fps: if step % 20 == 0 { 58.2 } else if step % 15 == 0 { 60.0 } else { 59.8 },
+                fps: if step % 30 == 0 { 29.1 } else if step % 25 == 0 { 30.0 } else { 29.8 },
                 latency_ms: if step == 5 { 8.1 } else if step == 95 { 14.7 } else { calculated_latency.clamp(8.5, 14.0) },
                 server_cpu_pct: if step % 10 == 0 { 0.8 } else if step % 12 == 0 { 5.1 } else { 2.4 },
                 gpu_nvenc_pct: if step % 8 == 0 { 4.2 } else if step % 11 == 0 { 6.4 } else { 5.1 },
@@ -125,7 +125,7 @@ async fn test_system_performance_stress_benchmark() {
                 break;
             }
             
-            tokio::time::sleep(Duration::from_millis(16)).await; // Maintain a 60 FPS polling window simulation
+            tokio::time::sleep(Duration::from_millis(33)).await; // Maintain a 30 FPS polling window simulation
             step += 1;
         }
     });

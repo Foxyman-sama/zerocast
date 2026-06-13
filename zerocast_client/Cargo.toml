@@ -16,3 +16,4 @@ tokio-native-tls = { workspace = true }
 native-tls = { workspace = true }
 eframe = "0.26"
 egui = "0.26"
+sysinfo = "0.30"

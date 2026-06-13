@@ -11,11 +11,54 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
   INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
 };
 
+use std::sync::Arc;
+
 pub use zerocast_core::input::RemoteInput;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ServerTelemetry {
+  pub cpu_usage: f32,
+  pub gpu_usage: f32,
+  pub ram_usage_mb: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ServerResponse {
-  Pong { client_time: u64 },
+  Pong {
+    client_time: u64,
+    telemetry: Option<ServerTelemetry>,
+  },
+}
+
+/// Gathers real-time performance metrics from the host operating system
+fn get_server_telemetry(sys: &mut sysinfo::System) -> ServerTelemetry {
+  sys.refresh_all();
+  let current_pid = sysinfo::Pid::from(std::process::id() as usize);
+  
+  let (cpu, ram) = if let Some(process) = sys.process(current_pid) {
+    (process.cpu_usage(), process.memory() as f32 / 1024.0 / 1024.0)
+  } else {
+    (0.0, 0.0)
+  };
+
+  // Attempt to query NVENC utilization via nvidia-smi if available
+  let gpu = std::process::Command::new("nvidia-smi")
+    .args(["--query-gpu=utilization.encoder", "--format=csv,noheader,nounits"])
+    .output()
+    .ok()
+    .and_then(|out| {
+      String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<f32>()
+        .ok()
+    })
+    .unwrap_or(0.0);
+
+  ServerTelemetry {
+    cpu_usage: cpu,
+    gpu_usage: gpu,
+    ram_usage_mb: ram,
+  }
 }
 
 /// Asynchronous service handling input replication and Ping-Pong latency measurement over TLS
@@ -23,6 +66,8 @@ pub async fn run_input_replication_service()
 -> Result<(), Box<dyn std::error::Error>> {
   let listener = TcpListener::bind("0.0.0.0:8081").await?;
   println!("[INPUT] Secured Service successfully bound to port 8081");
+  
+  let sys = Arc::new(tokio::sync::Mutex::new(sysinfo::System::new_all()));
 
   // 1. Initialize local cryptographic identity profile from PKCS#12 store
   let manifest_dir =
@@ -51,6 +96,7 @@ pub async fn run_input_replication_service()
   loop {
     let (socket, client_addr) = listener.accept().await?;
     let acceptor_clone = acceptor.clone();
+    let sys_clone = Arc::clone(&sys);
 
     tokio::spawn(async move {
       println!(
@@ -113,7 +159,12 @@ pub async fn run_input_replication_service()
                   inject_windows_key(key_code, true);
                 }
                 RemoteInput::Ping { client_time } => {
-                  let response = ServerResponse::Pong { client_time };
+                  let telemetry = {
+                    let mut guard = sys_clone.lock().await;
+                    Some(get_server_telemetry(&mut guard))
+                  };
+
+                  let response = ServerResponse::Pong { client_time, telemetry };
                   if let Ok(serialized_resp) = bincode::serialize(&response) {
                     let resp_len = serialized_resp.len() as u32;
                     // Write structured binary framing layout across TLS stream
