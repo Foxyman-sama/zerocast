@@ -121,16 +121,20 @@ def setup_venv():
             print(f"[ERROR] Failed to create virtual environment: {e}")
             return sys.executable
 
-    if os.name == 'nt':
-        path = os.path.abspath(os.path.join(venv_dir, "Scripts", "python.exe"))
-    else:
-        path = os.path.abspath(os.path.join(venv_dir, "bin", "python"))
-        
-    if os.path.exists(path):
-        return path
-    else:
-        print(f"[WARNING] Virtual environment python not found at {path}. Falling back to system python.")
-        return sys.executable
+    # Flexible path checking for MSYS2 vs Standard Windows
+    paths_to_try = [
+        os.path.join(venv_dir, "Scripts", "python.exe"),
+        os.path.join(venv_dir, "bin", "python.exe"),
+        os.path.join(venv_dir, "bin", "python"),
+    ]
+    
+    for p in paths_to_try:
+        abs_p = os.path.abspath(p)
+        if os.path.exists(abs_p):
+            return abs_p
+            
+    print(f"[WARNING] Virtual environment python not found in expected locations. Falling back to system python.")
+    return sys.executable
 
 def setup():
     print("=== Zerocast Fully Automated Quick Setup ===")
@@ -199,7 +203,11 @@ def setup():
             print(f"[ERROR] Failed to generate certificate. You may need to restart your terminal.")
 
     # 4. Install Python dependencies
-    print_step("Installing Python dependencies (using venv)")
+    print_step("Installing Python dependencies")
+    
+    # Ensure system python has pip (especially needed for MSYS2)
+    check_and_install_pip()
+    
     venv_python = setup_venv()
     quoted_venv_python = f'"{venv_python}"'
     
@@ -215,7 +223,7 @@ def setup():
         if subprocess.run(install_cmd, shell=True).returncode != 0:
             print("[INFO] Attempting with --break-system-packages...")
             subprocess.run(install_cmd + " --break-system-packages", check=True, shell=True)
-        print("[SUCCESS] Python dependencies installed in virtual environment.")
+        print("[SUCCESS] Python dependencies installed.")
     except Exception as e:
         print(f"[ERROR] Failed to install dependencies: {e}")
         sys.exit(1)
