@@ -1,91 +1,176 @@
 import os
 import sys
-import subprocess
-import time
-import re
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-def get_env():
-    env = os.environ.copy()
-    gst_root = Path(env.get("GSTREAMER_1_0_ROOT_X86_64", r"C:\gstreamer\1.0\msvc_x86_64"))
-    if not gst_root.exists(): gst_root = Path(r"C:\Program Files\gstreamer\1.0\msvc_x86_64")
-    
-    if gst_root.exists():
-        pc_path = gst_root / "lib" / "pkgconfig"
-        is_unix = "MSYSTEM" in env or "SHELL" in env
-        sep = ":" if is_unix else os.pathsep
-        def fmt(p): return f"/{p.drive[0].lower()}{str(p.as_posix())[2:]}" if is_unix and p.drive else str(p)
-        
-        env["GSTREAMER_1_0_ROOT_X86_64"] = str(gst_root)
-        env["PKG_CONFIG_PATH"] = f"{fmt(pc_path)}{sep}{env.get('PKG_CONFIG_PATH', '')}".strip(sep)
-        env["PATH"] = f"{fmt(gst_root / 'bin')}{sep}{env.get('PATH', '')}".strip(sep)
-        env["PKG_CONFIG_ALLOW_SYSTEM_LIBS"] = "1"
-        env["PKG_CONFIG_ALLOW_SYSTEM_CFLAGS"] = "1"
-    return env
+# Ensure console output handles UTF-8 safely on Windows
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
 
 CSV_FILE = "client_metrics.csv"
 REPORT_FILE = "FINAL_REPORT.md"
 IMAGE_FILE = "performance_graph.png"
 
-def run_benchmark(duration=20):
-    print(f"📊 Starting Performance Test ({duration}s)...")
-    env = get_env()
-    
-    server_proc = subprocess.Popen(
-        ["cargo", "test", "--test", "real_bench", "--", "--nocapture"],
-        cwd="zerocast_server", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env
-    )
-    
-    for line in server_proc.stdout:
-        if "[BENCH] Starting" in line: break
-    time.sleep(2)
-    
-    gst_bin = Path(env["GSTREAMER_1_0_ROOT_X86_64"]) / "bin" / "gst-launch-1.0.exe"
-    client_cmd = [str(gst_bin), "-v", "srtsrc", "uri=srt://127.0.0.1:5000", "passphrase=SuperSecureZeroCastKey2026", "!", "h264parse", "!", "fpsdisplaysink", "text-overlay=false", "video-sink=fakesink", "signal-fps-measurements=true"]
-    client_proc = subprocess.Popen(client_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
-    
-    gpu_enc, s_cpu, s_ram = [], [], []
-    start = time.time()
-    while time.time() - start < duration:
-        try:
-            gpu_out = subprocess.check_output([r"C:\WINDOWS\system32\nvidia-smi.exe", "--query-gpu=utilization.encoder", "--format=csv,noheader,nounits"], encoding='utf-8').strip()
-            gpu_enc.append(float(gpu_out))
-        except: pass
-        try:
-            ps_cmd = 'Get-Process | Where-Object { $_.ProcessName -like "*real_bench*" } | Select-Object CPU, WorkingSet64'
-            ps_out = subprocess.check_output(["powershell", "-NoProfile", "-Command", ps_cmd], encoding='utf-8').strip().split('\n')
-            if len(ps_out) >= 3:
-                parts = ps_out[2].split()
-                s_cpu.append(float(parts[0]))
-                s_ram.append(float(parts[1]) / 1024 / 1024)
-        except: pass
-        time.sleep(0.5)
+def generate_report():
+    print(f"Analyzing data from {CSV_FILE}...")
+    csv_path = Path(CSV_FILE)
+    if not csv_path.exists():
+        print(f"Error: {CSV_FILE} not found. Please run zerocast_server and zerocast_client first to generate metrics data.")
+        sys.exit(1)
         
-    client_proc.terminate()
-    server_proc.terminate()
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as e:
+        print(f"Error reading {CSV_FILE}: {e}")
+        sys.exit(1)
+        
+    if df.empty:
+        print(f"Error: {CSV_FILE} is empty.")
+        sys.exit(1)
+        
+    print(f"Loaded {len(df)} telemetry snapshots.")
     
-    out, _ = client_proc.communicate()
-    fps_matches = re.findall(r"current: ([\d\.]+)", out)
-    fps_vals = [float(f) * 0.223 for f in fps_matches] # Scaled for reality
+    # Map the columns in CSV to display names
+    # CSV fields: Latency_MS,FPS,Srv_CPU_Pct,Srv_GPU_Pct,Srv_RAM_MB,Cli_RAM_MB
+    metrics_map = {
+        "FPS": {
+            "en": "Frame Rate (FPS)",
+            "ua": "Частота оновлення екрана (FPS)"
+        },
+        "Latency_MS": {
+            "en": "End-to-End Latency (Click-to-Photon), ms",
+            "ua": "Наскрізна затримка (Click-to-Photon), мс"
+        },
+        "Srv_CPU_Pct": {
+            "en": "Server CPU Usage, %",
+            "ua": "Завантаження CPU сервера, %"
+        },
+        "Srv_GPU_Pct": {
+            "en": "Server GPU NVENC Core Usage, %",
+            "ua": "Навантаження на ядро GPU NVENC сервера, %"
+        },
+        "Srv_RAM_MB": {
+            "en": "Server RAM Usage, MB",
+            "ua": "Обсяг оперативної пам'яті сервера (RAM), МБ"
+        },
+        "Cli_RAM_MB": {
+            "en": "Client RAM Usage, MB",
+            "ua": "Обсяг оперативної пам'яті клієнта (RAM), МБ"
+        }
+    }
     
-    cpu_usage = (s_cpu[-1] - s_cpu[0]) / duration * 100.0 if len(s_cpu) > 2 else 0
-    df = pd.DataFrame({"FPS": fps_vals if fps_vals else [0], "GPU_Pct": gpu_enc if gpu_enc else [0], "RAM_MB": s_ram if s_ram else [0], "CPU_Pct": [cpu_usage] * len(s_ram)})
-    df.to_csv(CSV_FILE, index=False)
-
-def generate_visuals():
-    if not Path(CSV_FILE).exists(): return
-    df = pd.read_csv(CSV_FILE)
-    plt.figure(figsize=(10, 5))
-    plt.plot(df["FPS"], label="FPS", color="#1F618D")
-    plt.title("Zerocast Live Performance")
-    plt.legend(); plt.grid(True, alpha=0.3); plt.savefig(IMAGE_FILE)
+    # Calculate stats
+    stats = {}
+    for col in metrics_map.keys():
+        if col in df.columns:
+            series = df[col].dropna()
+            if not series.empty:
+                stats[col] = {
+                    "min": float(series.min()),
+                    "avg": float(series.mean()),
+                    "max": float(series.max())
+                }
+            else:
+                stats[col] = {"min": 0.0, "avg": 0.0, "max": 0.0}
+        else:
+            stats[col] = {"min": 0.0, "avg": 0.0, "max": 0.0}
+            
+    # Generate the Markdown tables
+    report_content = []
+    report_content.append("# Zerocast Performance Analysis Report")
+    report_content.append(f"\n*Generated from {len(df)} telemetry samples in `{CSV_FILE}`.*\n")
     
+    # Ukrainian Table
+    report_content.append("## Експериментальні показники продуктивності (Ukrainian)")
+    report_content.append("| Експериментальний параметр продуктивності | Мінімальне значення | Середнє значення | Максимальне значення |")
+    report_content.append("| :--- | :---: | :---: | :---: |")
+    for col, names in metrics_map.items():
+        s = stats[col]
+        report_content.append(f"| {names['ua']} | {s['min']:.1f} | {s['avg']:.1f} | {s['max']:.1f} |")
+        
+    # English Table
+    report_content.append("\n## Experimental Performance Metrics (English)")
+    report_content.append("| Experimental Performance Metric | Minimum Value | Average Value | Maximum Value |")
+    report_content.append("| :--- | :---: | :---: | :---: |")
+    for col, names in metrics_map.items():
+        s = stats[col]
+        report_content.append(f"| {names['en']} | {s['min']:.1f} | {s['avg']:.1f} | {s['max']:.1f} |")
+        
+    # Write report
     with open(REPORT_FILE, "w", encoding="utf-8") as f:
-        f.write(f"# Performance Report\n\n| Metric | Min | Avg | Max |\n| :--- | :---: | :---: | :---: |\n")
-        f.write(f"| FPS | {df['FPS'].min():.1f} | {df['FPS'].mean():.1f} | {df['FPS'].max():.1f} |\n")
-        f.write(f"| Server RAM (MB) | {df['RAM_MB'].min():.1f} | {df['RAM_MB'].mean():.1f} | {df['RAM_MB'].max():.1f} |\n")
+        f.write("\n".join(report_content) + "\n")
+    print(f"Report saved to {REPORT_FILE}")
+    
+    # Print the Ukrainian table to console
+    print("\n=== EXPERIMENTAL BENCHMARK REPORT ===")
+    print("| Експериментальний параметр продуктивності | Мінімальне значення | Середнє значення | Максимальне значення |")
+    print("| :--- | :---: | :---: | :---: |")
+    for col, names in metrics_map.items():
+        s = stats[col]
+        print(f"| {names['ua']} | {s['min']:.1f} | {s['avg']:.1f} | {s['max']:.1f} |")
+    print("=====================================\n")
+    
+    # Generate visuals
+    generate_visuals(df)
+
+def generate_visuals(df):
+    print(f"Generating performance graphs -> {IMAGE_FILE}...")
+    
+    # Apply a clean modern style
+    plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
+    
+    fig, axes = plt.subplots(3, 1, figsize=(11, 12), sharex=False)
+    fig.suptitle("Zerocast Live Performance Metrics", fontsize=16, fontweight='bold', color='#2C3E50')
+    
+    # 1. Network & Display (FPS & Latency)
+    ax1 = axes[0]
+    ax1_twin = ax1.twinx()
+    
+    fps_data = df["FPS"].ffill().bfill() if "FPS" in df.columns else pd.Series(dtype=float)
+    lat_data = df["Latency_MS"].ffill().bfill() if "Latency_MS" in df.columns else pd.Series(dtype=float)
+    
+    p1, = ax1.plot(df.index, fps_data, label="FPS", color="#1F618D", linewidth=2)
+    p2, = ax1_twin.plot(df.index, lat_data, label="Latency (ms)", color="#E74C3C", linewidth=1.5, linestyle="--")
+    
+    ax1.set_title("Network & Display (FPS & Latency)", fontsize=12, fontweight='bold', color='#34495E', loc='left')
+    ax1.set_ylabel("Frame Rate (FPS)", color="#1F618D", fontweight='bold')
+    ax1_twin.set_ylabel("Latency (ms)", color="#E74C3C", fontweight='bold')
+    ax1.tick_params(axis='y', labelcolor="#1F618D")
+    ax1_twin.tick_params(axis='y', labelcolor="#E74C3C")
+    ax1.legend(handles=[p1, p2], loc="upper right")
+    
+    # 2. Compute Utilization (Server CPU & GPU %)
+    ax2 = axes[1]
+    cpu_data = df["Srv_CPU_Pct"].ffill().bfill() if "Srv_CPU_Pct" in df.columns else pd.Series(dtype=float)
+    gpu_data = df["Srv_GPU_Pct"].ffill().bfill() if "Srv_GPU_Pct" in df.columns else pd.Series(dtype=float)
+    
+    ax2.plot(df.index, cpu_data, label="Server CPU %", color="#27AE60", linewidth=1.8)
+    ax2.plot(df.index, gpu_data, label="Server GPU %", color="#F39C12", linewidth=1.8)
+    ax2.set_title("Compute Utilization (CPU & GPU)", fontsize=12, fontweight='bold', color='#34495E', loc='left')
+    ax2.set_ylabel("Utilization %", fontweight='bold')
+    ax2.set_ylim(0, 105)
+    ax2.legend(loc="upper right")
+    
+    # 3. Memory Allocation (Server & Client RAM in MB)
+    ax3 = axes[2]
+    srv_ram = df["Srv_RAM_MB"].ffill().bfill() if "Srv_RAM_MB" in df.columns else pd.Series(dtype=float)
+    cli_ram = df["Cli_RAM_MB"].ffill().bfill() if "Cli_RAM_MB" in df.columns else pd.Series(dtype=float)
+    
+    ax3.plot(df.index, srv_ram, label="Server RAM (MB)", color="#8E44AD", linewidth=1.8)
+    ax3.plot(df.index, cli_ram, label="Client RAM (MB)", color="#16A085", linewidth=1.8)
+    ax3.set_title("Memory Allocation (RAM)", fontsize=12, fontweight='bold', color='#34495E', loc='left')
+    ax3.set_ylabel("Memory (MB)", fontweight='bold')
+    ax3.set_xlabel("Sample Index", fontweight='bold')
+    ax3.legend(loc="upper right")
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(IMAGE_FILE, dpi=120)
+    plt.close()
+    print("Performance graphs generated successfully.")
 
 if __name__ == "__main__":
-    run_benchmark(); generate_visuals()
+    generate_report()

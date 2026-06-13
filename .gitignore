@@ -4,3 +4,7 @@ Cargo.lock
 *.p12
 *.png
 *.csv
+
+.venv/
+FINAL_REPORT.md
+get-pip.py
