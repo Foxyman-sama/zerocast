@@ -5,7 +5,7 @@
 ---
 
 ## 🛠 Features
-- **Zero-Touch Setup:** Fully automated environment preparation.
+- **Zero-Touch Setup:** Fully automated environment preparation for both PowerShell and Bash.
 - **Ultra-Low Latency:** Optimized for LAN environments with DXGI desktop capture.
 - **Hardware Accelerated:** Native NVIDIA NVENC support.
 - **Secure Control:** TLS-encrypted input replication (Mouse/Keyboard).
@@ -15,19 +15,18 @@
 
 ## 🚀 Quick Start (Windows)
 
-The project includes a **fully automated setup script** that handles the installation of all system prerequisites including Rust, GStreamer, and OpenSSL.
+The project includes an **Ultimate Setup Engine** that handles the installation of all system prerequisites including Rust, GStreamer, and OpenSSL.
 
 ### 1. Automated Installation
-Open your terminal (PowerShell or CMD) **as Administrator** and run:
+Open your terminal (PowerShell or Bash) **as Administrator** and run:
 ```powershell
 python quick_setup.py
 ```
 This script will:
-1. Bootstrap `winget` (if missing).
-2. Install **Rust**, **GStreamer (MSVC)**, and **OpenSSL**.
-3. Configure system environment variables.
-4. Generate required **SSL Certificates**.
-5. Install Python dependencies and build the project.
+- Bootstrap `winget`, **Rust**, **GStreamer**, and **OpenSSL**.
+- Configure system environment variables for your specific shell.
+- Generate required **SSL Certificates**.
+- Prepare a local **Virtual Environment** and build the project.
 
 ### 2. Launch the Project
 Once setup is complete, you can start the components:
@@ -52,21 +51,21 @@ Zerocast includes an integrated suite for performance validation.
 ```bash
 python analytics.py
 ```
-This will conduct a 20-second live test, collecting FPS, CPU, and RAM metrics, then generate a `FINAL_REPORT.md` and `performance_graph.png`.
+This will conduct a 20-second live test and generate a `FINAL_REPORT.md` and `performance_graph.png`.
 
 ---
 
 ## 📂 Repository Structure
-- `zerocast_server/`: Screen capture, encoding, and host services.
+- `zerocast_server/`: Host services (DXGI/NVENC).
 - `zerocast_client/`: Receiver UI (`egui`) and GStreamer playback.
-- `zerocast_core/`: Shared protocol and authentication logic.
+- `zerocast_core/`: Shared protocol and security logic.
 - `analytics.py`: Consolidated performance measurement tool.
-- `quick_setup.py`: The "Zero-Touch" installation engine.
+- `quick_setup.py`: The "Ultimate Setup" installation engine.
 
 ---
 
 ## 🎓 Academic Context
-This software was developed for a Diploma thesis focusing on high-performance remote rendering architectures. It demonstrates the efficacy of GStreamer in low-latency Rust applications.
+This software was developed for a Diploma thesis focusing on high-performance remote rendering architectures.
 
 ## ⚖️ License
 Educational use only. Part of a Diploma Thesis (2026).
