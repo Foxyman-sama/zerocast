@@ -1,0 +1,45 @@
+﻿@startuml TCP_vs_Zerocast_Hybrid
+title TCP Limitations vs Zerocast Hybrid Approach
+skinparam componentStyle rectangle
+left to right direction
+
+skinparam BackgroundColor #1E1E1E
+skinparam DefaultFontName Arial
+skinparam DefaultFontSize 12
+skinparam PackageFontColor #FFFFFF
+skinparam PackageBorderColor #444444
+
+skinparam rectangle {
+    BackgroundColor #FFFFFF
+    BorderColor #FFFFFF
+    FontColor #000000
+}
+
+package "The TCP Problem (Classic)" as TCP_PROB {
+    rectangle "Frame N\n(Lost Packet)" as lost #FFCDD2
+    rectangle "Frame N+1\n(Waiting...)" as wait1 #FFF9C4
+    rectangle "Frame N+2\n(Waiting...)" as wait2 #FFF9C4
+
+    lost -[#red,bold]-> wait1 : HoL Blocking
+    wait1 -> wait2
+
+    note bottom of wait2 : <b>Result:</b> Cumulative Latency\n& Bitrate Collapse
+}
+
+package "Zerocast Hybrid Architecture" as ZEROCAST {
+    package "Control (TCP/TLS)" as Ctrl {
+        [Commands] as cmd
+        note right of cmd : Reliability (TCP)
+    }
+
+    package "Media (UDP/SRT)" as Media {
+        [Video Frame] as frame
+        note right of frame : Low Latency (UDP/SRT)
+    }
+}
+
+TCP_PROB -[hidden]down-> ZEROCAST
+
+note top of TCP_PROB : <b>Classic TCP:</b>\nHead-of-Line Blocking & Jitter
+note top of ZEROCAST : <b>Hybrid:</b>\nIsolation of Control and Media
+@enduml

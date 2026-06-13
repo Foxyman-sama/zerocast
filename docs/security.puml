@@ -1,0 +1,62 @@
+﻿@startuml Zerocast_Security_Diagram
+skinparam BackgroundColor #1E1E1E
+skinparam DefaultFontName Arial
+skinparam DefaultFontSize 11
+skinparam packageStyle rectangle
+
+skinparam PackageFontColor #FFFFFF
+skinparam PackageBorderColor #444444
+skinparam PackageFontSize 13
+
+skinparam rectangle {
+    BackgroundColor #FFFFFF
+    BorderColor #FFFFFF
+    FontColor #000000
+    RoundCorner 4
+}
+
+skinparam ArrowColor #00e5ff
+skinparam ArrowFontColor #FFFFFF
+skinparam ArrowThickness 2
+
+left to right direction
+
+package "1. ZeroCast Client" as Client {
+    rectangle "egui Auth UI" as ClientUi
+    rectangle "Input Service" as ClientInput
+    rectangle "GStreamer Receiver" as ClientMedia
+
+    ClientUi -[hidden]down-> ClientInput
+    ClientInput -[hidden]down-> ClientMedia
+}
+
+package "2. Secure Network Channel" as Network {
+    rectangle "Port: 8080 (TCP)\n<size:10><color:gray>Dynamic Handshake</color></size>" as PortAuth #F5F5F5
+    rectangle "Port: 8081 (TCP/TLS)\n<size:10><color:blue>**TLS 1.3 Encryption**</color></size>" as PortInput #E1F5FE
+    rectangle "Port: 5000 (UDP/SRT)\n<size:10><color:red>**AES-128 Encryption**</color></size>" as PortMedia #FFE0B2
+
+    PortAuth -[hidden]down-> PortInput
+    PortInput -[hidden]down-> PortMedia
+}
+
+package "3. ZeroCast Server" as Server {
+    rectangle "SessionStore" as Store
+    rectangle "Input Replicator" as ServerInput
+    rectangle "GStreamer Producer" as ServerMedia
+
+    Store -[hidden]down-> ServerInput
+    ServerInput -[hidden]down-> ServerMedia
+}
+
+Client -[hidden]-> Network
+Network -[hidden]-> Server
+
+ClientUi -right-> PortAuth : AuthRequest
+PortAuth -right-> Store : Validation
+
+ClientInput -right-> PortInput : TLS Stream
+PortInput -right-> ServerInput : Replication
+
+ClientMedia <-right- PortMedia : SRT Stream
+PortMedia <-right- ServerMedia : Capture/Encode
+@enduml

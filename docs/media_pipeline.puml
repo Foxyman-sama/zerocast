@@ -1,0 +1,52 @@
+﻿@startuml Direct_Media_Pipeline
+skinparam BackgroundColor #1E1E1E
+skinparam DefaultFontName Arial
+skinparam DefaultFontSize 11
+skinparam packageStyle rectangle
+skinparam PackageFontColor #FFFFFF
+skinparam PackageBorderColor #444444
+skinparam PackageFontSize 13
+skinparam rectangle {
+    BackgroundColor #FFFFFF
+    BorderColor #FFFFFF
+    FontColor #000000
+    RoundCorner 4
+}
+skinparam ArrowColor #00e5ff
+skinparam ArrowThickness 2
+left to right direction
+package "1. Capture (VRAM Context)" as VRAM {
+    rectangle "d3d11screencapturesrc\n<size:10><color:gray>[DXGI Capture]</color></size>" as src
+    rectangle "queue (leaky=downstream)" as raw_q
+    rectangle "d3d11scale" as scale
+    rectangle "d3d11convert" as convert
+    rectangle "capsfilter (D3D11, NV12)" as gpu_caps
+}
+package "2. Memory Bridge" as Bridge {
+    rectangle "d3d11download\n<size:10><color:gray>[VRAM -> RAM Copy]</color></size>" as download
+    rectangle "capsfilter (System, NV12)" as cpu_caps
+    rectangle "videoconvert" as vconv
+}
+package "3. Hardware Encoding" as HwEnc {
+    rectangle "nvh264enc\n(zerolatency=true)\n<size:10><color:gray>[NVENC H.264]</color></size>" as encoder
+    rectangle "h264parse" as parse
+}
+package "4. Network Transmission" as NetTrans {
+    rectangle "queue" as net_q
+    rectangle "srtsink\n(latency=20ms)\n<size:10><color:gray>[SRT via UDP]</color></size>" as sink
+}
+VRAM -[hidden]-> Bridge
+Bridge -[hidden]-> HwEnc
+HwEnc -[hidden]-> NetTrans
+src -> raw_q
+raw_q -> scale
+scale -> convert
+convert -> gpu_caps
+gpu_caps -> download
+download -> cpu_caps
+cpu_caps -> vconv
+vconv -> encoder
+encoder -> parse
+parse -> net_q
+net_q -> sink
+@enduml

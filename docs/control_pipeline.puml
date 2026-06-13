@@ -1,0 +1,45 @@
+﻿@startuml Control_Replication_Pipeline
+skinparam BackgroundColor #1E1E1E
+skinparam DefaultFontName Arial
+skinparam DefaultFontSize 11
+skinparam packageStyle rectangle
+skinparam PackageFontColor #FFFFFF
+skinparam PackageBorderColor #444444
+skinparam PackageFontSize 13
+skinparam rectangle {
+    BackgroundColor #FFFFFF
+    BorderColor #FFFFFF
+    FontColor #000000
+    RoundCorner 4
+}
+skinparam ArrowColor #00e5ff
+skinparam ArrowThickness 2
+left to right direction
+package "1. ZeroCast Client (Capture)" as Client {
+    rectangle "egui Event Loop\n<size:10><color:gray>[Event Capture]</color></size>" as Egui
+    rectangle "Input Mapper" as Mapper
+    rectangle "RemoteInput Enum" as Enum
+    rectangle "Bincode Serializer" as Serializer
+    rectangle "TLS Connector" as ClientTLS
+}
+package "2. Transport" as Net {
+    rectangle "TLS Secure Socket\n<size:10><color:gray>[Secure TCP]</color></size>" as Socket #e1f5fe
+}
+package "3. ZeroCast Server (Injection)" as Server {
+    rectangle "TLS Acceptor\n<size:10><color:gray>[TLS 1.3 Decryption]</color></size>" as ServerTLS
+    rectangle "Bincode Deserializer" as Deserializer
+    rectangle "Denormalization" as Denorm
+    rectangle "Win32 SendInput API\n<size:10><color:gray>[Input Emulation]</color></size>" as Win32
+}
+Client -[hidden]-> Net
+Net -[hidden]-> Server
+Egui -> Mapper
+Mapper -> Enum
+Enum -> Serializer
+Serializer -> ClientTLS
+ClientTLS -> Socket
+Socket -> ServerTLS
+ServerTLS -> Deserializer
+Deserializer -> Denorm
+Denorm -> Win32
+@enduml

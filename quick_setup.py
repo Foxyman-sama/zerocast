@@ -78,6 +78,34 @@ def refresh_env():
     except:
         pass
 
+def check_and_install_pip():
+    """Checks for pip and installs it if missing."""
+    print("[INFO] Checking for pip...")
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, check=True)
+        print("[INFO] pip is already installed.")
+        return True
+    except:
+        print("[INFO] pip not found. Attempting to install via ensurepip...")
+        try:
+            subprocess.run([sys.executable, "-m", "ensurepip", "--default-pip"], check=True)
+            print("[SUCCESS] pip installed via ensurepip.")
+            return True
+        except:
+            print("[INFO] ensurepip failed. Attempting to download get-pip.py...")
+            try:
+                import urllib.request
+                url = "https://bootstrap.pypa.io/get-pip.py"
+                with urllib.request.urlopen(url) as response, open("get-pip.py", 'wb') as out_file:
+                    out_file.write(response.read())
+                subprocess.run([sys.executable, "get-pip.py"], check=True)
+                os.remove("get-pip.py")
+                print("[SUCCESS] pip installed via get-pip.py.")
+                return True
+            except Exception as e:
+                print(f"[ERROR] Failed to install pip: {e}")
+                return False
+
 def setup():
     print("=== Zerocast Fully Automated Quick Setup ===")
 
@@ -146,7 +174,11 @@ def setup():
 
     # 4. Install Python dependencies
     print_step("Installing Python dependencies")
-    run_command([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+    if check_and_install_pip():
+        run_command([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+    else:
+        print("[ERROR] pip is missing and could not be installed. Please install it manually.")
+        sys.exit(1)
 
     # 5. Build project
     print_step("Building project")

@@ -1,0 +1,89 @@
+﻿@startuml Zerocast_Class_Diagram
+skinparam BackgroundColor #1E1E1E
+skinparam DefaultFontName Arial
+skinparam DefaultFontSize 11
+set namespaceSeparator ::
+skinparam PackageFontColor #FFFFFF
+skinparam PackageBorderColor #444444
+skinparam PackageFontSize 13
+skinparam class {
+    BackgroundColor #FFFFFF
+    BorderColor #FFFFFF
+    FontColor #000000
+    RoundCorner 4
+}
+skinparam ArrowColor #00e5ff
+skinparam ArrowFontColor #FFFFFF
+skinparam ArrowThickness 2
+left to right direction
+package zerocast_client {
+    class ZeroCastApp {
+        + ip_input: String
+        + login_input: String
+        - auth_status: Arc<Mutex<AuthResult>>
+        - video_texture: Option<TextureHandle>
+        + update(ctx: Context, frame: Frame)
+    }
+    enum AuthResult {
+        Pending
+        Success
+        Error(String)
+    }
+    class ClientServices {
+        + run_auth_interactor()
+        + run_input_service()
+        + start_gstreamer_pipeline()
+    }
+    ZeroCastApp --> AuthResult : tracks state
+}
+package zerocast_core {
+    enum RemoteInput {
+        MouseMove(x: f32, y: f32)
+        MouseDown(button: String)
+        MouseUp(button: String)
+        KeyPress(key_code: u16)
+        KeyRelease(key_code: u16)
+        Ping(client_time: u64)
+    }
+    struct AuthRequest {
+        + login: String
+        + password: String
+    }
+    enum AuthResponse {
+        Success(session_token: String)
+        Failure(reason: String)
+    }
+}
+package zerocast_server {
+    class SessionStore {
+        + active_sessions: Mutex<Vec<Session>>
+        + HeartbeatMonitor()
+        + push_new_session(session: Session)
+    }
+    struct Session {
+        + uuid: UUIDv4
+        + username: String
+        + ip_address: IpAddr
+        + start_time: Instant
+    }
+    class AuthInteractor {
+        - rate_limiter: LeakyBucket
+        + validate_token(req: AuthRequest): AuthResponse
+    }
+    class InputService {
+        + run_input_replication_service()
+        - inject_windows_key(vk_code: u16, is_key_up: bool)
+    }
+    class MediaPipeline {
+        + run_media_pipeline(client_ip: String)
+        - build_gstreamer_pipeline(): Pipeline
+    }
+    AuthInteractor --> SessionStore : updates states
+    SessionStore *-- Session : aggregates
+}
+zerocast_client -[hidden]-> zerocast_core
+zerocast_core -[hidden]-> zerocast_server
+ZeroCastApp ..> zerocast_core::RemoteInput : generates
+InputService ..> zerocast_core::RemoteInput : consumes
+AuthInteractor ..> zerocast_core::AuthRequest : authenticates
+@enduml
